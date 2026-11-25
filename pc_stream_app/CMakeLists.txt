@@ -56,23 +56,45 @@ if(MSVC)
     target_compile_options(ht306_desktop_app PRIVATE /O2 /W3)
 else()
     target_compile_options(ht306_desktop_app PRIVATE -O3 -Wall -Wno-unused-variable)
-    target_link_options(ht306_desktop_app PRIVATE -mwindows -static-libgcc -static-libstdc++)
+    target_link_options(ht306_desktop_app PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/bundle_ui.py)
     add_custom_target(bundle_ui
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/bundle_ui.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/bundle_ui.py --inline-scripts
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Assembling modular UI views and scripts into index.html"
+        COMMENT "Assembling modular UI views and scripts into self-contained index.html"
     )
     add_dependencies(ht306_desktop_app bundle_ui)
 endif()
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/ui)
-    add_custom_command(TARGET ht306_desktop_app POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/ui
-            $<TARGET_FILE_DIR:ht306_desktop_app>/ui
-    )
+add_custom_command(TARGET ht306_desktop_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:ht306_desktop_app>/ui
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html
+        $<TARGET_FILE_DIR:ht306_desktop_app>/ui/index.html
+)
+
+# ==============================================================================
+# Target: test_audio_rate_dsp (Host Unit Tests for DSP, 7.1/4.0, Polyphase LUT, & 24-bit Codec)
+# ==============================================================================
+add_executable(test_audio_rate_dsp
+    tests/test_audio_rate_dsp.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../firmware/src/lossless_codec.c
+)
+
+set_property(TARGET test_audio_rate_dsp PROPERTY CXX_STANDARD 17)
+set_property(TARGET test_audio_rate_dsp PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(test_audio_rate_dsp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_LIST_DIR}/../firmware/include
+)
+
+if(MSVC)
+    target_compile_options(test_audio_rate_dsp PRIVATE /O2 /W3)
+else()
+    target_compile_options(test_audio_rate_dsp PRIVATE -O3 -Wall -Wextra)
+    target_link_options(test_audio_rate_dsp PRIVATE -static-libgcc -static-libstdc++)
 endif()

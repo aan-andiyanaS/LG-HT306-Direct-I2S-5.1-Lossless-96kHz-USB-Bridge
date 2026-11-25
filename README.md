@@ -30,34 +30,31 @@ In simple terms, the complete audio pipeline flows as follows:
 $$\text{Player (JRiver / Windows)} \longrightarrow \text{VB-Cable (Virtual Soundcard)} \longrightarrow \text{HT306 Desktop App} \longrightarrow \text{RP2350-Zero} \longrightarrow \text{LG HT306 Amplifier} \longrightarrow \text{6 Speakers}$$
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph PC["1. Host PC (Windows 10 / 11)"]
-        direction TB
-        APP["Audio Players\n(JRiver / YouTube / Spotify / Movies)"]
-        VBC["Virtual Soundcard (VB-Cable)\n'LG HT306 Home Theater'\n(Dual-Endpoint: Playback & Loopback)"]
-        HOST["HT306 Desktop App (ht306_desktop_app)\nWASAPI Capture + Resampler <= 96 kHz\n+ Lossless Delta-Rice Encoder + WinUSB"]
+        APP["Audio Players<br/>(JRiver / YouTube / Spotify / Movies)"]
+        VBC["Virtual Soundcard (VB-Cable)<br/>LG HT306 Home Theater<br/>(Dual-Endpoint: Playback & Loopback)"]
+        HOST["HT306 Desktop App (ht306_desktop_app)<br/>WASAPI Capture + Resampler &le; 96 kHz<br/>+ Lossless Delta-Rice Encoder + WinUSB"]
         APP ==>|"Audio Stream"| VBC
         VBC ==>|"Loopback Capture"| HOST
     end
 
     subgraph MCU["2. Waveshare RP2350-Zero (USB Bridge)"]
-        direction TB
-        C0["Core 0: TinyUSB Receiver\nWinUSB Bulk (EP 0x03 OUT)\nRing Buffer + Reassembly"]
-        C1["Core 1: Lossless Decoder\nUnpacks to PCM 32-bit (< 0.03 ms)"]
-        PIO["DMA Ping-Pong + PIO0 Engine\nSynchronous Multi-Lane I2S Master\n(BCK, LRCK, ADATA0..2)"]
+        C0["Core 0: TinyUSB Receiver<br/>WinUSB Bulk (EP 0x03 OUT)<br/>Ring Buffer + Reassembly"]
+        C1["Core 1: Lossless Decoder<br/>Unpacks to PCM 32-bit (&lt; 0.03 ms)"]
+        PIO["DMA Ping-Pong + PIO0 Engine<br/>Synchronous Multi-Lane I2S Master<br/>(BCK, LRCK, ADATA0..2)"]
         C0 --> C1 --> PIO
     end
 
     subgraph HT306["3. LG HT306 Home Theater"]
-        direction TB
-        PS["IC602: Pulsus PS9850\n(Digital PWM Processor + 69-Band EQ)"]
-        TAS["IC701/702: TI TAS5352\n(330W RMS Class-D Power Stage)"]
-        SPK["6 Physical Speakers (5.1 Surround)\nFL, FR, Center, Subwoofer, SL, SR"]
+        PS["IC602: Pulsus PS9850<br/>(Digital PWM Processor + 69-Band EQ)"]
+        TAS["IC701/702: TI TAS5352<br/>(330W RMS Class-D Power Stage)"]
+        SPK["6 Physical Speakers (5.1 Surround)<br/>FL, FR, Center, Subwoofer, SL, SR"]
         PS --> TAS --> SPK
     end
 
     HOST ==>|"USB Type-C (WinUSB Bulk)"| C0
-    PIO ==>|"5x 33Ω Damping Resistors\n(GP2..GP6)"| PS
+    PIO ==>|"5x 33 Ohm Damping Resistors<br/>(GP2..GP6)"| PS
 ```
 
 ### The 4 Stages of the Audio Pipeline:

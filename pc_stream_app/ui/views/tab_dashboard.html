@@ -24,7 +24,7 @@
         </button>
 
         <!-- Master Mute Quick Button -->
-        <button id="master-mute-btn" type="button" class="w-8 h-8 rounded-full bg-surface-2 hover:bg-surface-3 border border-border flex items-center justify-center text-text-secondary hover:text-text-primary transition-colors cursor-pointer" onclick="window.toggleMasterMute ? window.toggleMasterMute() : toggleMute()" title="Mute Output">
+        <button id="master-mute-btn" type="button" class="w-8 h-8 rounded-full bg-surface-2 hover:bg-surface-3 border border-border flex items-center justify-center text-text-secondary hover:text-text-primary transition-colors cursor-pointer" title="Mute Output">
           <span id="mute-icon" class="material-symbols-outlined text-[17px]">volume_up</span>
         </button>
       </div>
@@ -33,19 +33,18 @@
     <!-- 2. MASTER CONTROLS BAR: Sample Rate Selector & Sound Profiles (Hanya Kontrol Utama) -->
     <div class="bg-surface rounded-xl p-4 border border-border-subtle flex flex-col md:flex-row md:items-center justify-between gap-4">
       
-      <!-- Sample Rate Selector (Auto / 96k / 48k) -->
+      <!-- Sample Rate Selector (96k / 48k) -->
       <div class="flex items-center gap-3">
         <span class="text-xs font-medium text-text-secondary uppercase tracking-wider">Sample Rate</span>
         
         <div class="flex items-center bg-surface-2 p-1 rounded-lg border border-border">
-          <button id="btn-rate-auto" type="button" class="px-3 py-1 rounded-md text-xs font-mono font-medium transition-all bg-primary text-white shadow-sm cursor-pointer" onclick="window.handleSampleRateSelect ? window.handleSampleRateSelect('auto') : setSampleRate('auto')">Auto</button>
-          <button id="btn-rate-96k" type="button" class="px-3 py-1 rounded-md text-xs font-mono font-medium transition-all text-text-secondary hover:text-text-primary hover:bg-surface-3 cursor-pointer" onclick="window.handleSampleRateSelect ? window.handleSampleRateSelect('96k') : setSampleRate('96k')">96 kHz</button>
+          <button id="btn-rate-96k" type="button" class="px-3 py-1 rounded-md text-xs font-mono font-medium transition-all bg-primary text-white shadow-sm cursor-pointer" onclick="window.handleSampleRateSelect ? window.handleSampleRateSelect('96k') : setSampleRate('96k')">96 kHz</button>
           <button id="btn-rate-48k" type="button" class="px-3 py-1 rounded-md text-xs font-mono font-medium transition-all text-text-secondary hover:text-text-primary hover:bg-surface-3 cursor-pointer" onclick="window.handleSampleRateSelect ? window.handleSampleRateSelect('48k') : setSampleRate('48k')">48 kHz</button>
         </div>
 
-        <!-- Dynamic Feedback Pill (Auto Clamp / Status) -->
-        <span id="dash-rate-feedback" class="text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-status-ok border border-border-subtle">
-          Aktif: 96.0 kHz (Auto ≤96k)
+        <!-- Dynamic Feedback Pill -->
+        <span id="dash-rate-feedback" class="text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-primary font-semibold border border-border-subtle">
+          Terkunci: 96.0 kHz (Studio Master)
         </span>
       </div>
 
@@ -155,7 +154,7 @@
 
           <!-- Master Slider -->
           <div class="flex flex-col gap-2">
-            <input type="range" id="master-slider" min="-60" max="6" step="0.5" value="0" class="w-full accent-primary h-1.5 bg-surface rounded-full appearance-none cursor-pointer" oninput="window.updateMaster ? window.updateMaster(this.value) : handleMasterSlider(this.value)" />
+            <input type="range" id="master-slider" min="-60" max="6" step="0.5" value="0" class="w-full accent-primary h-1.5 bg-surface rounded-full appearance-none cursor-pointer" />
             <div class="flex justify-between text-[10px] font-mono text-text-muted">
               <span>-60 dB</span>
               <span>-24</span>
@@ -189,39 +188,6 @@
         <span>Diagnostik lengkap di <button type="button" onclick="switchTab('log')" class="text-text-secondary hover:text-text-primary font-medium underline underline-offset-2 cursor-pointer">Log</button></span>
       </div>
     </footer>
-
-    <!-- 5. HIDDEN DIAGNOSTICS & TELEMETRY REGISTRY (Guarantees telemetry.js safe loop execution without UI clutter) -->
-    <div class="hidden" aria-hidden="true">
-      <span id="dash-connected-text">● CONNECTED</span>
-      <span id="dash-com-port">COM4</span>
-      <span id="dash-vid-pid">0x2E8A : 0x4306</span>
-      <button id="toggle-stream-btn" type="button"></button>
-      <span id="mute-label">Mute Master</span>
-      <span id="dash-sample-rate">96.0 kHz</span>
-      <span id="dash-profile-name">Cinema Surround</span>
-      <span id="dash-clip-pill"><span id="dash-clip-dot"></span><span id="dash-clip-text">CLIP: NONE</span></span>
-      <button id="reset-peaks-btn" type="button"></button>
-      <button id="master-zero-btn" type="button"></button>
-      <button id="mute-btn" type="button"></button>
-      <div id="master-meter-bar"></div>
-      <span id="dash-device-name">WASAPI Loopback</span>
-      <span id="dash-bit-depth">32-bit Container</span>
-      <span id="dash-channels">5.1 Surround</span>
-      <span id="dash-buffer-fill">62% Fill</span>
-      <span id="dash-link-pct">68% Utilized</span>
-      <div id="dash-link-bar"></div>
-      <span id="dash-bitrate">716 KB/s Current Rate</span>
-      <span id="dash-underruns">0 / hr</span>
-      <span id="dash-uptime">00:00:00</span>
-      <button id="sweep-btn" type="button"></button>
-      <button id="btn-reset-buffer" type="button"></button>
-      <span id="dash-heartbeat">♥ 1 Hz OK</span>
-      <span id="dash-pio-status">READY</span>
-      <span id="dash-mux-status">HIGH</span>
-      <span id="dash-dsp-status">LOCKED</span>
-      <span id="dash-fifo-depth">1024 B · 0.0ms</span>
-      <span id="master-vol-num">0.0 dB</span>
-    </div>
 
   </div>
 </div>

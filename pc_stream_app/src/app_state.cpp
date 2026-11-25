@@ -1,78 +1,13 @@
 #include "app_state.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <ctime>
 
 namespace ht306 {
 
 AppState::AppState() {
-    // 1. Initial Profiles
-    profiles = {
-        {
-            "prof_movie",
-            "Movie / Cinematic Surround",
-            "Dynamic dialogue intelligibility, ITU-R BS.775 surround matrix, and 24ms AV lip-sync offset.",
-            "Desktop OS-Linked",
-            "ITU-R 5.1 Matrix",
-            24,
-            +1.5f,
-            120,
-            true
-        },
-        {
-            "prof_music",
-            "Music / Bit-Perfect Audiophile",
-            "Direct 1:1 discrete sample passthrough with zero resampling and hardware DSP bypass.",
-            "Bit-Perfect Pass-thru",
-            "Direct 1:1 Discrete",
-            0,
-            0.0f,
-            80,
-            false
-        },
-        {
-            "prof_game",
-            "Gaming / Ultra-Low Latency",
-            "Tight 3.8ms sub-packet buffers, localized rear imaging, and low-lag surround tracking.",
-            "Desktop OS-Linked",
-            "Spatial 5.1 Gaming",
-            12,
-            +0.5f,
-            100,
-            false
-        },
-        {
-            "prof_night",
-            "Late Night / Dynamic Compression",
-            "Soft-knee dialogue boost and subdued bass transients for quiet home theater listening.",
-            "Desktop OS-Linked",
-            "ITU-R Night Limiter",
-            24,
-            +3.0f,
-            80,
-            false
-        }
-    };
-
-    // 2. Initial Application Rules
-    app_rules = {
-        { "PotPlayer 64-bit", "PotPlayer64.exe", "Movie / Cinematic Surround", true },
-        { "Foobar2000 Hi-Res", "foobar2000.exe", "Music / Bit-Perfect Audiophile", true },
-        { "Cyberpunk 2077", "Cyberpunk2077.exe", "Gaming / Ultra-Low Latency", true },
-        { "MPC-HC Video Player", "mpc-hc64.exe", "Movie / Cinematic Surround", true },
-        { "TIDAL Desktop", "TIDAL.exe", "Music / Bit-Perfect Audiophile", false }
-    };
-
-    // 3. Initial Authentic Event Logs
-    logs = {
-        { "19:42:01.102", LogLevel::LOG_INFO,  "SYS_CORE",   "HT306 Audio Bridge Engine initialized. OS: Windows 10/11 CoreAudio." },
-        { "19:42:01.145", LogLevel::LOG_INFO,  "WINUSB",     "Device discovery: VID 0x2E8A PID 0x4306 (RP2350-Zero Direct-I2S)." },
-        { "19:42:01.210", LogLevel::LOG_INFO,  "WINUSB",     "Claimed Interface 2 Bulk Endpoint 0x03 OUT (512B MaxPacketSize)." },
-        { "19:42:01.250", LogLevel::LOG_INFO,  "CDC_ACM",    "Control channel opened on COM4 @ 115200 baud." },
-        { "19:42:01.298", LogLevel::LOG_INFO,  "RP2350",     "Handshake ACK: Firmware v1.3.0 | PIO SM0-2 Dual Core Sync." },
-        { "19:42:01.312", LogLevel::LOG_INFO,  "HARDWARE",   "GP8 MUX Pin pulled HIGH (Direct I2S PS9850 ASRC bypass)." },
-        { "19:42:01.350", LogLevel::LOG_DEBUG, "AUDIO_CAP",  "WASAPI Loopback endpoint acquired: 96000 Hz, 6 Channels, 32-bit Float." },
-        { "19:42:01.402", LogLevel::LOG_INFO,  "CODEC",      "Lossless Rice-FLAC Order-4 encoder ready. Buffer batch: 8 frames." },
-        { "19:42:01.450", LogLevel::LOG_INFO,  "DSP_CORE",   "6-Channel TAS5508 DSP Matrix ready. Master unity 0.0dB. Limiter active." },
-        { "19:42:02.000", LogLevel::LOG_DEBUG, "TELEMETRY",  "Link Budget: 716 KB/s (68% utilized), Clock drift: +0.003 ppm, 0 drop." }
-    };
+    AddLog(LogLevel::LOG_INFO, "SYS_CORE", "HT306 Audio Bridge Engine initialized (24-bit Lossless Direct-I2S).");
 }
 
 void AppState::AddLog(LogLevel level, const std::string& subsystem, const std::string& msg) {
@@ -91,18 +26,91 @@ void AppState::AddLog(LogLevel level, const std::string& subsystem, const std::s
     std::lock_guard<std::mutex> lock(log_mutex);
     logs.push_back({ buf, level, subsystem, msg });
     if (logs.size() > 500) {
-        logs.erase(logs.begin());
+        logs.pop_front();
     }
+    log_revision.fetch_add(1, std::memory_order_release);
 }
 
 void AppState::ClearLogs() {
     std::lock_guard<std::mutex> lock(log_mutex);
     logs.clear();
+    log_revision.fetch_add(1, std::memory_order_release);
 }
 
-std::vector<LogEntry> AppState::GetLogsSnapshot() const {
+std::vector<LogEntry> AppState::GetRecentLogsSnapshot(size_t max_count) const {
     std::lock_guard<std::mutex> lock(log_mutex);
-    return logs;
+    size_t n = logs.size();
+    size_t start = (n > max_count) ? (n - max_count) : 0;
+    std::vector<LogEntry> out;
+    out.reserve(n - start);
+    for (size_t i = start; i < n; ++i) {
+        out.push_back(logs[i]);
+    }
+    return out;
+}
+
+AppSettings AppState::GetSettingsSnapshot() const {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return settings;
+}
+
+AudioDspSettings AppState::GetAudioDspSettingsSnapshot() const {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return static_cast<const AudioDspSettings&>(settings);
+}
+
+HardwareInfo AppState::GetHwInfoSnapshot() const {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    return hw_info;
+}
+
+void AppState::GetMetersSnapshot(ChannelMeters out[6]) const {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    for (int i = 0; i < 6; ++i) {
+        out[i] = meters[i];
+    }
+}
+
+void AppState::UpdateMetersFromPeaks(const float ch_max[6], const bool ch_clipped[6]) {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    for (int c = 0; c < 6; ++c) {
+        float peak = ch_max[c];
+        float db = -60.0f;
+        if (std::isfinite(peak) && peak > 1e-5f) {
+            db = 20.0f * std::log10(peak);
+        }
+        if (!std::isfinite(db) || db < -60.0f) db = -60.0f;
+        if (db > 0.0f) db = 0.0f;
+
+        meters[c].peak_db = (meters[c].peak_db * 0.7f) + (db * 0.3f);
+        if (meters[c].peak_db < -59.95f) meters[c].peak_db = -60.0f;
+        if (db > meters[c].peak_hold_db) {
+            meters[c].peak_hold_db = db;
+        } else {
+            meters[c].peak_hold_db = (std::max)(-60.0f, meters[c].peak_hold_db - 0.5f);
+        }
+        meters[c].clipped = ch_clipped[c];
+    }
+}
+
+void AppState::DecayMeters() {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    for (int c = 0; c < 6; ++c) {
+        meters[c].peak_db = (meters[c].peak_db * 0.7f) + (-60.0f * 0.3f);
+        if (meters[c].peak_db < -59.9f) {
+            meters[c].peak_db = -60.0f;
+        }
+        meters[c].peak_hold_db = (std::max)(-60.0f, meters[c].peak_hold_db - 0.5f);
+        meters[c].clipped = false;
+    }
+}
+
+void AppState::ResetMeterPeaks() {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    for (int c = 0; c < 6; ++c) {
+        meters[c].peak_hold_db = -60.0f;
+        meters[c].clipped = false;
+    }
 }
 
 namespace {
@@ -150,6 +158,7 @@ void AppState::SetAvailableDevices(
     if (available_devices.empty()) {
         active_device_id.clear();
         active_device_index.store(0);
+        devices_revision.fetch_add(1, std::memory_order_release);
         return;
     }
 
@@ -173,28 +182,30 @@ void AppState::SetAvailableDevices(
 
     active_device_index.store(target_idx);
     active_device_id = available_devices[static_cast<size_t>(target_idx)].id;
+    devices_revision.fetch_add(1, std::memory_order_release);
 }
 
 bool AppState::SelectDeviceByIndex(int idx, std::string* out_name) {
+    bool found = false;
     std::lock_guard<std::mutex> lock(devices_mutex);
     if (idx >= 0 && idx < static_cast<int>(available_devices.size())) {
         active_device_index.store(idx);
         active_device_id = available_devices[static_cast<size_t>(idx)].id;
-        settings.target_device_index = idx;
         if (out_name) {
             *out_name = available_devices[static_cast<size_t>(idx)].name;
         }
-        return true;
+        found = true;
+    } else {
+        if (idx == 0 && available_devices.empty()) {
+            active_device_index.store(0);
+            active_device_id.clear();
+        }
+        if (out_name) {
+            out_name->clear();
+        }
     }
-    if (idx == 0 && available_devices.empty()) {
-        active_device_index.store(0);
-        active_device_id.clear();
-        settings.target_device_index = 0;
-    }
-    if (out_name) {
-        out_name->clear();
-    }
-    return false;
+    devices_revision.fetch_add(1, std::memory_order_release);
+    return found;
 }
 
 bool AppState::SelectDeviceById(const std::wstring& id) {
@@ -203,9 +214,10 @@ bool AppState::SelectDeviceById(const std::wstring& id) {
     int idx = FindDeviceIndexById(available_devices, id);
     if (idx >= 0) {
         active_device_index.store(idx);
-        settings.target_device_index = idx;
+        devices_revision.fetch_add(1, std::memory_order_release);
         return true;
     }
+    devices_revision.fetch_add(1, std::memory_order_release);
     return false;
 }
 

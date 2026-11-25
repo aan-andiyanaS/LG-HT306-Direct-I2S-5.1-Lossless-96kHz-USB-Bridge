@@ -496,5 +496,59 @@ aw_st = transport.state; st = raw_st() if callable(raw_st) else raw_st).
        - Memperbarui Seksi 2 dan Seksi 5 pada `README.md` dan `README.id.md`.
        - Lulus verifikasi audit 18 file markdown: `100% paired`, `0 broken relative links`.
   - Files: `README.md`, `README.id.md`, `docs/05_PC_Audio_Bridge_PRD_and_Architecture.{id.md,md}`, `docs/06_JRiver_Audio_Data_Topology.{id.md,md}`, `docs/07_Complete_Architecture_and_Topology.{id.md,md}`, `docs/08_Credits_and_Acknowledgments.{id.md,md}`, `tasks/todo.md`
+- [x] **Slice 35: Penyusunan Dokumen Rencana Publikasi Jurnal Ilmiah Internasional (Opsi B — 4 Makalah Spesialis)**
+  - Acceptance:
+    1. Menyusun dokumen rencana publikasi ilmiah internasional di `docs/intent/rencana-publikasi-jurnal-internasional.md` berdasarkan Strategi Opsi B (4 makalah spesialis lintas bidang dengan rantai sitasi bebas *self-plagiarism*).
+    2. Merinci rekomendasi judul utama & alternatif (Bahasa Inggris standar IEEE/Elsevier), rumusan masalah (*research gap*), kontribusi kebaruan (*novelty*), pemetaan file kode sumber, metrik evaluasi eksperimen, daftar target jurnal Scopus Q1/Q2, serta urutan prioritas penulisan untuk ke-4 makalah.
+  - Files: `docs/intent/rencana-publikasi-jurnal-internasional.md`, `tasks/todo.md`
+- [x] **Slice 36: Eksekusi Opsi 1 + Opsi 2 (Optimasi Efisiensi RP2350/PC, Perbaikan Bug Interaksi UI, Pembersihan Dead Code & Validasi Pelestarian Fitur)**
+  - Acceptance:
+    1. **Firmware RP2350 (`firmware/`):**
+       - Menambahkan LUT 256-entry `k_spread_rev8` (`1.024 B`) & `k_crc8_lut` (`256 B`) di SRAM (`__not_in_flash("ht306_lut")`, terverifikasi `0x2000...`), mempercepat bit-interleave 4-lane & CRC-8 ~9–10× (~430–480 µs → ~45 µs/blok @ 96 kHz).
+       - Menambahkan *zero-ramp skip* pada `ht306_build_fade_out_ramp_block()` saat 6 kanal terakhir sudah `0`, deduplikasi 5× commit DMA via `commit_dma`, *bulk `memcpy`* + guard `time_us_32()` pada `usb_descriptors.c`, guard `g_cdc_connected` untuk scan VU Core 1, early verbatim abort + 32-bit `predict_order4_24()` + hoisted warmup loop di `lossless_codec.c`.
+       - Menghapus dead code terverifikasi zero-caller (`ht306_crc8()`, stub `#else` encoder mati, `HT306_RING_BUFFER_FRAMES`, wrapper `ht306_i2s_set_sample_rate()`, cabang tak terjangkau di `br_get()` / `k > max_k`, menjadikan `g_ws2812_offset` lokal).
+    2. **Desktop App C++ & UI (`pc_stream_app/`):**
+       - Memperbaiki 2 bug interaksi + 1 lost-wakeup + UI blocker temuan adversarial review: `app_ready` dikirim 1× pasca-`load` + `g_PostBootTrimGen` di bawah `g_PostBootTrimMutex` (tutup freeze ~3,4 detik saat startup), hapus double-bound HTML/JS (`#header-audio-badge`, `.nav-btn`, `#master-mute-btn`, `#master-slider`, `#btn-install-vbcable`, `#setting-debug-audio-toggle`, `[data-speaker-node]`, `#btn-test-quick-swap`), perbaiki `#test-signal-chips` pada `tab_test.html`/`test.js`, serta perbaiki tombol `Direct Studio` (`card-bitperfect` + aktivasi `bit_perfect_mode = true`).
+       - Optimasi `TelemetryLoop()` (`std::deque<LogEntry>`, `log_revision`, skip push saat window di-tray/hidden, `std::move`), `UsbTransport` (`SetupDi` scoped `"USB"` & `GUID_DEVCLASS_PORTS`, `IsHwDetected()`, `CloseWinUsbHandlesLocked()`), dan `AudioCapture` (hoisted `IMMDeviceEnumerator*`, POD `AudioDspSettings`, `ComputeDownmixLinear` 1×/chunk, zero-copy `IsBypass()`, hoisted `DecodeInterleavedFrameToFloat8`).
+       - Menghapus teardown 3× duplikat di `main_webview.cpp`, dead structs/fields di `app_state.h`/`audio_policy_manager.h`, dead RPC `"update_config"`, serta mengubah `pc_stream_app/CMakeLists.txt` agar hanya menyalin `ui/index.html` ke `build/ui/`.
+    3. **Verifikasi Penuh & Audit Pelestarian Fitur (`code-reviewer`):**
+       - `ht306_rp2350_zero.uf2` (`85.504 B`), `ht306_desktop_app.exe` (`3.811.708 B`, `PE Subsystem = 2`), `index.html` (`222.098 B`).
+       - `scratch/test_lossless_codec.exe`: **9/9 suite LULUS** (`gcc -std=c11 -Wall -Wextra`, 0 warning).
+       - `pc_stream_app/build/test_audio_rate_dsp.exe`: **9/9 suite LULUS** (`11.46 ms` / `9.93 ms` 1s `192k->96k` 6ch).
+       - `tests/verify_end_to_end.py`: **6/6 suite LULUS**; `scratch/audit_md_links.py`: **18/18 docs LULUS**.
+       - Audit adversarial `code-reviewer` memastikan 0 fitur hilang dan 0 penghapusan file fisik.
+  - Files: `firmware/`, `pc_stream_app/`, `tasks/todo.md`
+
+- [x] **Slice 37: Siklus 1–3 Hardening Final Backend & Konvergensi Re-Audit Adversarial Pra-Setup Fisik (0 CRITICAL / 0 HIGH / 0 MEDIUM)**
+  - Acceptance:
+    1. **Siklus 1 (Firmware RP2350 & Desktop C++ Backend — 5 CRITICAL + 5 HIGH + 8 MEDIUM):**
+       - `FW-C1`, `FW-H1`, `FW-H2`, `FW-M1..M4` pada `i2s_engine.c`, `main.c`, `usb_descriptors.c`, `ht306_usb.h`, `tusb_config.h`, `firmware/CMakeLists.txt`, `test_lossless_codec.c`: set `PICO_HIGHEST_IRQ_PRIORITY` untuk `DMA_IRQ_0`, `dma_channel_abort()` + `first_reloaded_chan` saat Dual-IRQ stall, pelacakan rate per blok `g_ring_block_rate[32]`, deferred non-blocking `g_bootsel_requested`, `CFG_TUD_CDC_TX_BUFSIZE = 1024U`, boot I2S awal aman `48 kHz` (auto-switch ke `96 kHz`), explicit `bool is_streaming`, + Suite 10 unit test firmware.
+       - `PC-C1..C4`, `PC-H1..H3`, `PC-M1..M4` pada `main_webview.cpp`, `usb_transport.h/.cpp`, `audio_capture.cpp`, `audio_policy_manager.h/.cpp`, `audio_rate_dsp.h`, `pc_stream_app/CMakeLists.txt`, `test_audio_rate_dsp.cpp`: lock mutex saat `SignalShutdown()`/`JoinAuxThreads()`, `1000 ms` debounce disconnect idle, latched `has_pending_disconnect`, simetri `2^23` (`FloatToInt24Safe`/`FloatToInt32Safe`) untuk 0-LSB round-trip 24-bit + mask `0x70F` 6.1 surround, timestamp throttle 30 detik RAM trim saat tray, guard `IMMDeviceEnumerator*` reconnect + `AUDCLNT_S_BUFFER_EMPTY` + `numFramesAvailable > 65536` + `try/catch` WASAPI, `RebootBootsel()` `COMMTIMEOUTS` & kirim command sebelum `CLRDTR`, `InstallDriver()` interruptible 250 ms, + Suite 10 DSP test.
+    2. **Siklus 2 (Kontrak Lintas-Lapisan & Standalone UI — 1 CRITICAL `BLD-C1` + 4 MEDIUM `CL-M1..M4`):**
+       - Menambahkan `--inline-scripts` pada `bundle_ui.py` di `pc_stream_app/CMakeLists.txt` sehingga `build/ui/index.html` (`312.308 B`) berdiri 100% mandiri (8/8 modul JS ter-inline, 0 `<script src="js/">`, `node --check` PASS, 0 file sisa di `build/ui/`).
+       - Perbaikan `com_port` reset menjadi `"--"` di `telemetry.js`, default `fifoDepth = 4096`, sinkronisasi DOM `.ch-fader`/`.ch-readout` dari `trims_db`, parsing `[INIT] BERHASIL` & `I2S Engine: ERROR` di `ParseSerialLine()`, reset `throughput_kbs = 0.0f` pada stop/disconnect/resume/fatal/flush, reset `routing_map` saat ganti profil, + 4 perbaikan defensif (`AudioCapture::Start`, `PollSerial`, `Close`, `VT_LPWSTR`).
+    3. **Siklus 3 (`CL-M5` + 3 LOW) & Konvergensi Audit Final:**
+       - Perbaikan `telemetry.js` agar status eksplisit `DISCONNECTED` selalu menjaga indikator header & dashboard merah (`Disconnected`) meski capture loop lokal standby aktif, clamp `mixer.js` `[-12, 12]`, `CloseSerial()` pada fatal `WritePacket()`, dan reset `throughput_kbs` saat `!stream_opened && !is_sweep`.
+       - Terverifikasi oleh 6 audit subagent independen across 3 siklus hingga **0 CRITICAL, 0 HIGH, 0 MEDIUM**, biner ELF `0` RAM→Flash, PE `0` DLL MinGW eksternal, `10/10` firmware host tests, `10/10` DSP C++ tests, `6/6` Python E2E tests, dan `18/18` markdown link audit. Sistem backend siap masuk **Tahap C** (setup & uji fisik meja kerja pada LG HT306).
+  - Files: `firmware/`, `pc_stream_app/`, `tasks/todo.md`
+
+- [x] **Slice 38: Eksekusi Opsi A — Optimasi Efisiensi ISR Firmware, Telemetry C++ Incremental, DOM Cache JS & Bundler**
+  - Acceptance:
+    1. **Firmware RP2350 (`i2s_engine.c`, `usb_descriptors.c`, `lossless_codec.h`):**
+       - Hoist single snapshot `w`, `q`, `queued` + single `HT306_MEMORY_BARRIER()` pada `ht306_dma_reload_channel()` sehingga Step 3 dan Step 4 berbagi snapshot bebas TOCTOU dan mengurangi dua `__dmb()` menjadi satu per reload DMA ISR.
+       - Menghapus `#include "i2s_engine.h"` yang tidak terpakai dan 11 baris unreachable guard pada reassembler `usb_descriptors.c` (`g_rx_accum_pos` terbukti dibatasi `{2,3}`), serta menghapus makro mati `HT306_RICE_K_MASK` di `lossless_codec.h`.
+    2. **Desktop C++ Backend (`app_state.h/.cpp`, `usb_transport.h/.cpp`, `audio_policy_manager.cpp`, `main_webview.cpp`):**
+       - Menambahkan `settings_revision` dan `devices_revision` atomik di `AppState` agar `TelemetryLoop()` mengirim seksi JSON `audio_driver`, `devices`, `logs`, dan `config` secara inkremental hanya saat berubah; memindah `MultiByteToWideChar` keluar dari `dispatch()` UI thread; men-throttle `GetCachedDriverStatus()` ke `counter <= 2 || resumed_visible || counter % 16 == 0`; serta men-deduplikasi `SwitchToHT306()` / `EnumerateDevices()` saat startup ketika RP2350 terdeteksi.
+       - Ekstrak `CloseSerialLocked()` dan `ResetTransportState()` di `UsbTransport`, menambahkan cooldown `15000 ms` (`m_serial_retry_after_ms`) pada `ERROR_ACCESS_DENIED`, dan memperlambat polling `WorkerLoop()` SetupDi ke `3000 ms` saat idle absent (`!m_is_open && m_consecutive_disconnect_count >= 3`) sambil mempertahankan `1000 ms` saat debounce disconnect.
+       - Menghapus enumerator COM duplikat di `CheckDriverStatus()` serta panggilan ganda `EnsureCaptureEndpointActive()` di `SwitchToHT306()` ketika `surfaced_now` sudah mengaktifkannya.
+    3. **WebView2 UI & Build Tooling (`tab_dashboard.html`, `telemetry.js`, `bundle_ui.py`):**
+       - Menghapus blok dummy `<div class="hidden" aria-hidden="true">` (28 elemen ber-ID ganda) dari `tab_dashboard.html`; menyisakan hanya 2 ID duplikat disengaja (`master-mute-btn`, `master-slider`) dari total `112` ID (`98` view IDs).
+       - Menambahkan lazy DOM cache `getDom()` dan `_prev` dirty-state cache di `telemetry.js`, melewati penulisan DOM VU off-tab (Dashboard/Mixer) kecuali saat aktif atau `tabChanged`, mengganti `.innerText` frekuensi tinggi ke `.textContent`, memindahkan pembaruan status ke sumber tunggal tanpa tabrakan di `updateStreamButtonUi()`, serta dirty-check `audio_driver` dengan `JSON.stringify` untuk menghapus `innerHTML` reparse ~28,5 Hz.
+       - Memperbarui `bundle_ui.py` agar memverifikasi di memori dan hanya menulis `build/ui/index.html` bila isinya berubah tanpa membuat/menghapus `bundle_test.tmp.html`.
+    4. **Verifikasi & Kesiapan Fisik HT306 (Post-Opsi-A):**
+       - `ht306_rp2350_zero.uf2` (`85.504 B`, `0` panggilan RAM→Flash di ELF), `ht306_desktop_app.exe` (`3.814.512 B`, `0` DLL MinGW eksternal), `build/ui/index.html` (`314.581 B`, `8/8` modul JS inline, `0` `<script src="js/">`, `node --check` & `bundle_ui.py --verify` `7/7 OK`), `test_lossless_codec.exe` `10/10 PASS`, `test_audio_rate_dsp.exe` `10/10 PASS` (`7,61 ms` 1s `192k→96k` 6ch), `verify_end_to_end.py` `6/6 PASS`, `audit_md_links.py` PASS, dan sanity inspection Opsi A **0 CRITICAL / 0 HIGH / 0 MEDIUM**. Layak masuk **Tahap C (Uji Meja Kerja LG HT306)** dengan protokol keselamatan fisik terlampir.
+  - Files: `firmware/src/i2s_engine.c`, `firmware/src/usb_descriptors.c`, `firmware/include/lossless_codec.h`, `pc_stream_app/src/app_state.h`, `pc_stream_app/src/app_state.cpp`, `pc_stream_app/src/usb_transport.h`, `pc_stream_app/src/usb_transport.cpp`, `pc_stream_app/src/audio_policy_manager.cpp`, `pc_stream_app/src/main_webview.cpp`, `pc_stream_app/ui/views/tab_dashboard.html`, `pc_stream_app/ui/js/telemetry.js`, `pc_stream_app/tools/bundle_ui.py`, `tasks/todo.md`
+
+
 
 

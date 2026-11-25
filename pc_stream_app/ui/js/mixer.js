@@ -27,7 +27,8 @@
       const btnPhase = card.querySelector(".btn-phase");
 
       function updateGain(val) {
-        const num = parseFloat(val);
+        const rawNum = parseFloat(val);
+        const num = Number.isFinite(rawNum) ? Math.max(-12, Math.min(12, rawNum)) : 0;
         if (fader) fader.value = num;
         if (readout) readout.textContent = (num > 0 ? "+" : "") + num.toFixed(1) + " dB";
         window.trimsDb[idx] = num;

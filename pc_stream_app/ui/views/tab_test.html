@@ -40,7 +40,7 @@
 <!-- Signal Pattern Selector Chips -->
 <div class="flex flex-col gap-1.5 w-full lg:w-auto">
 <span class="font-caption text-caption text-icon-gray font-semibold uppercase tracking-wider">Test Signal Excitation</span>
-<div class="flex flex-wrap items-center gap-1.5">
+<div class="flex flex-wrap items-center gap-1.5" id="test-signal-chips">
 <button class="px-space-md py-1.5 rounded-full bg-primary-container text-text-primary font-code-sm text-code-sm font-medium shadow-sm">
             Chirp Sweep (20Hz - 20kHz)
           </button>
@@ -208,7 +208,7 @@
 <span class="font-meter-num text-[10px] text-tertiary">0.0 ms DELAY REF</span>
 </div>
 <!-- Speaker Node 1: FRONT LEFT (FL -30°) -->
-<div class="absolute top-10 left-[18%] -translate-x-1/2 p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="FL" onclick="window.testEngine.setActiveSpeaker('FL')">
+<div class="absolute top-10 left-[18%] -translate-x-1/2 p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="FL">
 <div class="speaker-ping-ring absolute -inset-1 rounded-xl bg-primary-container opacity-0 transition-opacity pointer-events-none"></div>
 <div class="relative z-10 flex flex-col gap-1">
 <div class="flex items-center justify-between">
@@ -229,7 +229,7 @@
 </div>
 </div>
 <!-- Speaker Node 2: CENTER (C 0°) [Currently Active Hero State] -->
-<div class="absolute top-2 left-1/2 -translate-x-1/2 p-2.5 rounded-xl bg-surface-2 ring-2 ring-primary-container transition-all cursor-pointer shadow-md group w-40 z-20" data-speaker-node="C" onclick="window.testEngine.setActiveSpeaker('C')">
+<div class="absolute top-2 left-1/2 -translate-x-1/2 p-2.5 rounded-xl bg-surface-2 ring-2 ring-primary-container transition-all cursor-pointer shadow-md group w-40 z-20" data-speaker-node="C">
 <div class="speaker-ping-ring absolute -inset-1 rounded-xl bg-primary-container opacity-20 pointer-events-none"></div>
 <div class="relative z-10 flex flex-col gap-1">
 <div class="flex items-center justify-between">
@@ -255,7 +255,7 @@
 </div>
 </div>
 <!-- Speaker Node 3: FRONT RIGHT (FR +30°) -->
-<div class="absolute top-10 right-[18%] translate-x-1/2 p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="FR" onclick="window.testEngine.setActiveSpeaker('FR')">
+<div class="absolute top-10 right-[18%] translate-x-1/2 p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="FR">
 <div class="speaker-ping-ring absolute -inset-1 rounded-xl bg-primary-container opacity-0 transition-opacity pointer-events-none"></div>
 <div class="relative z-10 flex flex-col gap-1">
 <div class="flex items-center justify-between">
@@ -276,7 +276,7 @@
 </div>
 </div>
 <!-- Speaker Node 4: SUBWOOFER / LFE (-45° Floor Placement) -->
-<div class="absolute top-[80px] left-[5%] p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="LFE" onclick="window.testEngine.setActiveSpeaker('LFE')">
+<div class="absolute top-[80px] left-[5%] p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="LFE">
 <div class="speaker-ping-ring absolute -inset-1 rounded-xl bg-primary-container opacity-0 transition-opacity pointer-events-none"></div>
 <div class="relative z-10 flex flex-col gap-1">
 <div class="flex items-center justify-between">
@@ -300,7 +300,7 @@
 </div>
 </div>
 <!-- Speaker Node 5: SURROUND LEFT (SL -110°) -->
-<div class="absolute bottom-6 left-[8%] p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="SL" onclick="window.testEngine.setActiveSpeaker('SL')">
+<div class="absolute bottom-6 left-[8%] p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="SL">
 <div class="speaker-ping-ring absolute -inset-1 rounded-xl bg-primary-container opacity-0 transition-opacity pointer-events-none"></div>
 <div class="relative z-10 flex flex-col gap-1">
 <div class="flex items-center justify-between">
@@ -321,7 +321,7 @@
 </div>
 </div>
 <!-- Speaker Node 6: SURROUND RIGHT (SR +110°) [FLAGGED ISSUE CASE] -->
-<div class="absolute bottom-6 right-[8%] p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="SR" onclick="window.testEngine.setActiveSpeaker('SR')">
+<div class="absolute bottom-6 right-[8%] p-2.5 rounded-xl bg-surface-container-low hover:bg-surface-2 transition-all cursor-pointer shadow-sm group w-36 z-20" data-speaker-node="SR">
 <div class="speaker-ping-ring absolute -inset-1 rounded-xl bg-status-warn opacity-0 transition-opacity pointer-events-none"></div>
 <div class="relative z-10 flex flex-col gap-1">
 <div class="flex items-center justify-between">
@@ -428,7 +428,7 @@
 <span class="font-caption text-[11px] text-text-secondary leading-tight">
                 SR tone was emitted from SL speaker hardware.
               </span>
-<a class="px-2.5 py-1 rounded-full bg-primary-container hover:bg-lg-red-hover text-text-primary font-code-sm text-code-sm font-semibold flex items-center gap-1 transition-colors whitespace-nowrap" href="#" onclick="alert('Navigating to Channel Routing Matrix: Auto-Swapping SL and SR.'); return false;">
+<a id="btn-test-quick-swap" class="px-2.5 py-1 rounded-full bg-primary-container hover:bg-lg-red-hover text-text-primary font-code-sm text-code-sm font-semibold flex items-center gap-1 transition-colors whitespace-nowrap" href="#">
 <span>Swap SL ↔ SR</span>
 <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
 </a>

@@ -22,20 +22,19 @@
   };
 
   // --- SAMPLE RATE SELECTOR (DASHBOARD) ---
-  window.currentSampleRateMode = window.currentSampleRateMode || "auto";
+  window.currentSampleRateMode = window.currentSampleRateMode || "96k";
   window.currentActiveSampleRate = window.currentActiveSampleRate || 96000;
   window.currentCapturePath = window.currentCapturePath || "";
   window._lastSampleRateClickMs = window._lastSampleRateClickMs || 0;
 
   window.renderSampleRateUi = function (mode, activeRate, clamped, inputRate, capturePath) {
-    const normMode = (mode === "96k" || mode === "48k") ? mode : "auto";
+    const normMode = (mode === "48k") ? "48k" : "96k";
     window.currentSampleRateMode = normMode;
     if (typeof activeRate === "number" && activeRate > 0) {
       window.currentActiveSampleRate = activeRate;
     }
 
     const btns = {
-      auto: document.getElementById("btn-rate-auto"),
       "96k": document.getElementById("btn-rate-96k"),
       "48k": document.getElementById("btn-rate-48k"),
     };
@@ -64,22 +63,13 @@
     }
 
     if (label) {
-      if (!hasRate && normMode === "auto") {
-        label.innerText = "Standby (Auto ≤96k)";
+      if (!hasRate) {
+        label.innerText = `Standby (${normMode === "48k" ? "48" : "96"} kHz)`;
         label.className = "text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-text-muted border border-border-subtle";
-      } else if (normMode === "auto") {
-        if (clamped && inputRate > 0) {
-          const inKhz = (inputRate / 1000).toFixed(1);
-          label.innerText = `Auto Clamp: ${inKhz} → ${outKhz} kHz${pathHint}`;
-          label.className = "text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-status-warn font-semibold border border-border-subtle";
-        } else {
-          label.innerText = `Aktif: ${outKhz} kHz (Auto ≤96k)${pathHint}`;
-          label.className = "text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-status-ok border border-border-subtle";
-        }
       } else if (normMode === "96k") {
         label.innerText = `Terkunci: ${outKhz} kHz (Studio Master)${pathHint}`;
         label.className = "text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-primary font-semibold border border-border-subtle";
-      } else if (normMode === "48k") {
+      } else {
         label.innerText = `Terkunci: ${outKhz} kHz (Hi-Fi Standard)${pathHint}`;
         label.className = "text-xs font-mono px-2 py-0.5 rounded bg-surface-2 text-status-warn font-semibold border border-border-subtle";
       }
@@ -107,7 +97,7 @@
     if (typeof window.selectProfile === "function") {
       const cardMap = {
         Movie: "card-movie",
-        Direct: "card-audiophile",
+        Direct: "card-bitperfect",
         Music: "card-music",
         Gaming: "card-gaming",
       };

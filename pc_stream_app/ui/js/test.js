@@ -96,7 +96,7 @@
       }
 
       // Update button visual styles
-      const patternBtns = document.querySelectorAll(".flex-wrap > button");
+      const patternBtns = document.querySelectorAll("#test-signal-chips > button");
       patternBtns.forEach((btn, idx) => {
         if (idx === this.signalType) {
           btn.className = "px-space-md py-1.5 rounded-full bg-primary-container text-text-primary font-code-sm text-code-sm font-medium shadow-sm cursor-pointer";
@@ -174,7 +174,7 @@
     });
 
     // Signal Pattern Selector Chips
-    const patternContainer = document.querySelector(".flex-wrap");
+    const patternContainer = document.getElementById("test-signal-chips");
     if (patternContainer) {
       const patternBtns = patternContainer.querySelectorAll("button");
       patternBtns.forEach((btn, idx) => {

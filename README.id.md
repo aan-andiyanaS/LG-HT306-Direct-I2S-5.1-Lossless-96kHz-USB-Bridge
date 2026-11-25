@@ -30,34 +30,31 @@ Secara ringkas dan sederhana, gambaran besar seluruh alur data audio adalah:
 $$\text{Pemutar (JRiver / Windows)} \longrightarrow \text{VB-Cable (Kartu Suara Virtual)} \longrightarrow \text{Aplikasi Desktop HT306} \longrightarrow \text{RP2350-Zero} \longrightarrow \text{Amplifier LG HT306} \longrightarrow \text{6 Speaker}$$
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph PC["1. Host PC (Windows 10 / 11)"]
-        direction TB
-        APP["Aplikasi Pemutar\n(JRiver / YouTube / Spotify / Film)"]
-        VBC["Kartu Suara Virtual (VB-Cable)\n'LG HT306 Home Theater'\n(Dua Pintu: Playback & Loopback)"]
-        HOST["Aplikasi Desktop HT306 (ht306_desktop_app)\nWASAPI Capture + Resampler <= 96 kHz\n+ Encoder Lossless Delta-Rice + WinUSB"]
+        APP["Aplikasi Pemutar<br/>(JRiver / YouTube / Spotify / Film)"]
+        VBC["Kartu Suara Virtual (VB-Cable)<br/>LG HT306 Home Theater<br/>(Dua Pintu: Playback & Loopback)"]
+        HOST["Aplikasi Desktop HT306 (ht306_desktop_app)<br/>WASAPI Capture + Resampler &le; 96 kHz<br/>+ Encoder Lossless Delta-Rice + WinUSB"]
         APP ==>|"Aliran Audio"| VBC
         VBC ==>|"Loopback Capture"| HOST
     end
 
     subgraph MCU["2. Waveshare RP2350-Zero (USB Bridge)"]
-        direction TB
-        C0["Core 0: Penerima TinyUSB\nWinUSB Bulk (EP 0x03 OUT)\nRing Buffer + Rekonstruksi Paket"]
-        C1["Core 1: Dekoder Lossless\nBuka ke PCM 32-bit (< 0.03 ms)"]
-        PIO["DMA Ping-Pong + Mesin PIO0\nPembangkit I2S Master Multi-Lane\n(BCK, LRCK, ADATA0..2)"]
+        C0["Core 0: Penerima TinyUSB<br/>WinUSB Bulk (EP 0x03 OUT)<br/>Ring Buffer + Rekonstruksi Paket"]
+        C1["Core 1: Dekoder Lossless<br/>Buka ke PCM 32-bit (&lt; 0.03 ms)"]
+        PIO["DMA Ping-Pong + Mesin PIO0<br/>Pembangkit I2S Master Multi-Lane<br/>(BCK, LRCK, ADATA0..2)"]
         C0 --> C1 --> PIO
     end
 
     subgraph HT306["3. LG HT306 Home Theater"]
-        direction TB
-        PS["IC602: Pulsus PS9850\n(Prosesor PWM Digital + 69-Band EQ)"]
-        TAS["IC701/702: TI TAS5352\n(Power Stage Class-D 330W RMS)"]
-        SPK["6 Speaker Fisik (5.1 Surround)\nFL, FR, Center, Subwoofer, SL, SR"]
+        PS["IC602: Pulsus PS9850<br/>(Prosesor PWM Digital + 69-Band EQ)"]
+        TAS["IC701/702: TI TAS5352<br/>(Power Stage Class-D 330W RMS)"]
+        SPK["6 Speaker Fisik (5.1 Surround)<br/>FL, FR, Center, Subwoofer, SL, SR"]
         PS --> TAS --> SPK
     end
 
     HOST ==>|"Kabel USB Type-C (WinUSB Bulk)"| C0
-    PIO ==>|"5x Resistor Damping 33Ω\n(GP2..GP6)"| PS
+    PIO ==>|"5x Resistor Damping 33 Ohm<br/>(GP2..GP6)"| PS
 ```
 
 ### 4 Tahapan Utama Rantai Alur Audio:

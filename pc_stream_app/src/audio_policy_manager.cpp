@@ -9,9 +9,7 @@
 #include <ksmedia.h>
 #include <shlwapi.h>
 #include <shellapi.h>
-#include <iostream>
-#include <algorithm>
-#include <vector>
+#include <cstdio>
 
 #ifndef KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID = {
@@ -35,14 +33,6 @@ static std::string WideToUtf8(const std::wstring& wstr) {
     std::string str(size_needed, 0);
     WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
     return str;
-}
-
-[[maybe_unused]] static std::wstring Utf8ToWide(const std::string& str) {
-    if (str.empty()) return {};
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), NULL, 0);
-    std::wstring wstr(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &wstr[0], size_needed);
-    return wstr;
 }
 
 AudioPolicyManager& AudioPolicyManager::Instance() {
@@ -82,11 +72,27 @@ std::wstring AudioPolicyManager::GetCurrentDefaultEndpointId() {
     return default_id;
 }
 
+static std::wstring QueryRegStringSafe(HKEY hKey, const wchar_t* valueName) {
+    wchar_t buf[256] = { 0 };
+    DWORD cb = sizeof(buf) - sizeof(wchar_t);
+    DWORD type = 0;
+    if (RegQueryValueExW(hKey, valueName, NULL, &type, reinterpret_cast<LPBYTE>(buf), &cb) == ERROR_SUCCESS &&
+        (type == REG_SZ || type == REG_EXPAND_SZ)) {
+        size_t chars = cb / sizeof(wchar_t);
+        if (chars >= 256) chars = 255;
+        buf[chars] = L'\0';
+        return std::wstring(buf);
+    }
+    return {};
+}
+
 AudioDriverStatus AudioPolicyManager::CheckDriverStatus() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
-    // Automatically ensure VB-Cable endpoints are renamed to LG HT306 Home Theater and 16ch is disabled
-    SyncEndpointNames();
+    // Only run full registry discovery/sync once on first probe; never repeat every 4s in GetCachedDriverStatus()
+    if (!m_initial_sync_done) {
+        SyncEndpointNames();
+    }
 
     AudioDriverStatus status;
     status.installed = false;
@@ -95,8 +101,7 @@ AudioDriverStatus AudioPolicyManager::CheckDriverStatus() {
 
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
-    std::wstring current_default = GetCurrentDefaultEndpointId();
-
+    std::wstring current_default;
     IMMDeviceEnumerator* enumerator = NULL;
     HRESULT hr = CoCreateInstance(
         __uuidof(MMDeviceEnumerator),
@@ -107,6 +112,15 @@ AudioDriverStatus AudioPolicyManager::CheckDriverStatus() {
     );
 
     if (SUCCEEDED(hr) && enumerator) {
+        IMMDevice* def_dev = NULL;
+        if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &def_dev)) && def_dev) {
+            LPWSTR def_id = NULL;
+            if (SUCCEEDED(def_dev->GetId(&def_id)) && def_id) {
+                current_default = def_id;
+                CoTaskMemFree(def_id);
+            }
+            def_dev->Release();
+        }
         // 1. Direct O(1) lookup by resolved VB-Cable GUID if available from SyncEndpointNames()
         if (!m_ht306_guid.empty()) {
             std::wstring target_id = L"{0.0.0.00000000}." + m_ht306_guid;
@@ -123,7 +137,8 @@ AudioDriverStatus AudioPolicyManager::CheckDriverStatus() {
                 if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &props)) && props) {
                     PROPVARIANT var_name;
                     PropVariantInit(&var_name);
-                    if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name)) && var_name.pwszVal) {
+                    if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name)) &&
+                        var_name.vt == VT_LPWSTR && var_name.pwszVal) {
                         std::string name = WideToUtf8(var_name.pwszVal);
                         if (!name.empty()) {
                             status.endpoint_name = name;
@@ -161,7 +176,8 @@ AudioDriverStatus AudioPolicyManager::CheckDriverStatus() {
                         if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &props)) && props) {
                             PROPVARIANT var_name;
                             PropVariantInit(&var_name);
-                            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name)) && var_name.pwszVal) {
+                            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name)) &&
+                        var_name.vt == VT_LPWSTR && var_name.pwszVal) {
                                 std::string name = WideToUtf8(var_name.pwszVal);
                                 
                                 // Check specifically for LG HT306 or VB-CABLE Input (exclude 16ch sub-endpoint)
@@ -254,7 +270,8 @@ std::wstring AudioPolicyManager::FindFallbackNonHT306EndpointId() {
                     if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &props)) && props) {
                         PROPVARIANT var_name;
                         PropVariantInit(&var_name);
-                        if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name)) && var_name.pwszVal) {
+                        if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name)) &&
+                        var_name.vt == VT_LPWSTR && var_name.pwszVal) {
                             std::string name = WideToUtf8(var_name.pwszVal);
                             if (name.find("HT306") == std::string::npos &&
                                 name.find("CABLE") == std::string::npos &&
@@ -343,7 +360,9 @@ bool AudioPolicyManager::SetEndpointVisibility(bool visible) {
         EnsureCaptureEndpointActive();
     }
 
-    m_ht306_reg_state = visible ? 0x00000001 : 0x10000001;
+    if (ok) {
+        m_ht306_reg_state = visible ? 0x00000001 : 0x10000001;
+    }
     m_last_check_tick = 0; // Invalidate cache
     return ok;
 }
@@ -449,6 +468,9 @@ bool AudioPolicyManager::SetDefaultEndpoint(const std::wstring& device_id) {
 bool AudioPolicyManager::SwitchToHT306(AppState& state) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
+    if (m_ht306_guid.empty()) {
+        SyncEndpointNames();
+    }
     AudioDriverStatus status = CheckDriverStatus();
     if (!status.installed || status.endpoint_id.empty()) {
         state.AddLog(LogLevel::LOG_WARN, "AudioPolicy", 
@@ -463,8 +485,10 @@ bool AudioPolicyManager::SwitchToHT306(AppState& state) {
     }
 
     // 1. Ensure the LG HT306 Home Theater endpoint is visible in Windows Taskbar (DeviceState = 1)
+    bool surfaced_now = false;
     if (!status.endpoint_visible) {
         SetEndpointVisibility(true);
+        surfaced_now = true;
         // Poll up to 400ms (10 x 40ms) for Audiosrv to register the newly activated endpoint
         for (int attempt = 0; attempt < 10; ++attempt) {
             Sleep(40);
@@ -478,15 +502,12 @@ bool AudioPolicyManager::SwitchToHT306(AppState& state) {
     if (current_def != status.endpoint_id) {
         bool ok = SetDefaultEndpoint(status.endpoint_id);
         if (ok) {
-            m_switched_to_ht306 = true;
             state.AddLog(LogLevel::LOG_INFO, "AudioPolicy", 
                 "RP2350 connected: Surfaced & switched Windows Taskbar audio to " + status.endpoint_name);
         } else {
             state.AddLog(LogLevel::LOG_ERROR, "AudioPolicy", "Failed to switch default audio device via IPolicyConfig");
             return false;
         }
-    } else {
-        m_switched_to_ht306 = true;
     }
 
     // 3. Configure 5.1 surround format respecting user SampleRatePreference
@@ -505,7 +526,9 @@ bool AudioPolicyManager::SwitchToHT306(AppState& state) {
         state.AddLog(LogLevel::LOG_WARN, "AudioPolicy",
             "Gagal menyetel format 5.1 " + std::to_string(desired_rate) + "Hz pada endpoint Render HT306");
     }
-    EnsureCaptureEndpointActive();
+    if (!surfaced_now) {
+        EnsureCaptureEndpointActive();
+    }
     std::wstring cap_id = GetCaptureEndpointId();
     if (!cap_id.empty()) {
         if (!ConfigureEndpointFormat(cap_id, desired_rate)) {
@@ -539,10 +562,9 @@ bool AudioPolicyManager::RestorePreviousDefault(AppState& state) {
     if (!m_saved_previous_device_id.empty()) {
         SetDefaultEndpoint(m_saved_previous_device_id);
     }
-    m_switched_to_ht306 = false;
 
     // 3. Hide LG HT306 Home Theater from Windows Taskbar unless manual override is active
-    if (!m_manual_visibility_override) {
+    if (!m_manual_visibility_override.load(std::memory_order_acquire)) {
         if (SetEndpointVisibility(false) && status.endpoint_visible) {
             state.AddLog(LogLevel::LOG_INFO, "AudioPolicy", 
                 "RP2350 disconnected: Restored PC speaker and hid LG HT306 Home Theater from Windows Taskbar");
@@ -578,14 +600,16 @@ uint32_t AudioPolicyManager::QueryEndpoint6ChRateLocked(const std::wstring& devi
     return found_rate;
 }
 
-bool AudioPolicyManager::ConfigureEndpointFormat(const std::wstring& device_id, uint32_t sample_rate) {
+bool AudioPolicyManager::ConfigureEndpointFormat(const std::wstring& device_id, uint32_t sample_rate, HRESULT* out_last_hr) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (device_id.empty() || (sample_rate != 48000 && sample_rate != 96000)) {
+        if (out_last_hr) *out_last_hr = E_INVALIDARG;
         return false;
     }
 
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     bool success = false;
+    HRESULT last_hr = E_FAIL;
 
     IPolicyConfig* pPolicyConfig = NULL;
     HRESULT hr = CoCreateInstance(
@@ -595,76 +619,115 @@ bool AudioPolicyManager::ConfigureEndpointFormat(const std::wstring& device_id, 
         IID_IPolicyConfig,
         (void**)&pPolicyConfig
     );
+    if (FAILED(hr)) {
+        last_hr = hr;
+    }
 
     if (SUCCEEDED(hr) && pPolicyConfig) {
-        const DWORD masks[] = {
-            SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                SPEAKER_LOW_FREQUENCY | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT,
-            SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT
-        };
-
-        struct EpCandidate {
-            uint16_t container_bits;
-            uint16_t valid_bits;
-            bool is_float;
-        };
-        const EpCandidate candidates[] = {
-            { 24, 24, false }, // WDM 24-bit packed PCM (standard VB-Cable pin format)
-            { 32, 24, false }, // WDM 24-in-32 PCM
-            { 16, 16, false }, // WDM 16-bit PCM fallback
-            { 32, 32, true  }  // IEEE Float fallback
-        };
-
-        for (DWORD mask : masks) {
-            WAVEFORMATEXTENSIBLE mixFmt{};
-            mixFmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-            mixFmt.Format.nChannels = 6;
-            mixFmt.Format.nSamplesPerSec = sample_rate;
-            mixFmt.Format.wBitsPerSample = 32;
-            mixFmt.Format.nBlockAlign = 6 * sizeof(float);
-            mixFmt.Format.nAvgBytesPerSec = sample_rate * mixFmt.Format.nBlockAlign;
-            mixFmt.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-            mixFmt.Samples.wValidBitsPerSample = 32;
-            mixFmt.dwChannelMask = mask;
-            mixFmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
-
-            for (const auto& c : candidates) {
-                WAVEFORMATEXTENSIBLE epFmt{};
-                epFmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-                epFmt.Format.nChannels = 6;
-                epFmt.Format.nSamplesPerSec = sample_rate;
-                epFmt.Format.wBitsPerSample = c.container_bits;
-                epFmt.Format.nBlockAlign = static_cast<WORD>(6 * (c.container_bits / 8));
-                epFmt.Format.nAvgBytesPerSec = sample_rate * epFmt.Format.nBlockAlign;
-                epFmt.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-                epFmt.Samples.wValidBitsPerSample = c.valid_bits;
-                epFmt.dwChannelMask = mask;
-                epFmt.SubFormat = c.is_float ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
-
-                HRESULT hrSet = pPolicyConfig->SetDeviceFormat(
-                    device_id.c_str(),
-                    reinterpret_cast<WAVEFORMATEX*>(&epFmt),
-                    reinterpret_cast<WAVEFORMATEX*>(&mixFmt)
-                );
-                if (SUCCEEDED(hrSet)) {
-                    success = true;
-                    break;
-                }
+        auto verifyRateApplied = [&]() -> bool {
+            WAVEFORMATEX* verify_df = NULL;
+            HRESULT hrVer = pPolicyConfig->GetDeviceFormat(device_id.c_str(), 0, &verify_df);
+            bool matched = false;
+            if (SUCCEEDED(hrVer) && verify_df) {
+                matched = (verify_df->nSamplesPerSec == sample_rate);
+                CoTaskMemFree(verify_df);
             }
-            if (success) break;
+            return matched;
+        };
+
+        auto tryApplyPair = [&](WAVEFORMATEX* ep_fmt, WAVEFORMATEX* mix_fmt) -> bool {
+            if (!ep_fmt) return false;
+            last_hr = pPolicyConfig->SetDeviceFormat(device_id.c_str(), ep_fmt, mix_fmt);
+            if (FAILED(last_hr) && mix_fmt != NULL) {
+                last_hr = pPolicyConfig->SetDeviceFormat(device_id.c_str(), ep_fmt, NULL);
+            }
+            return SUCCEEDED(last_hr) && verifyRateApplied();
+        };
+
+        // Step 1: Clone currently active 6-channel endpoint/mix formats and retarget sample rate
+        WAVEFORMATEX* cur_df = NULL;
+        WAVEFORMATEX* cur_mf = NULL;
+        HRESULT hrGetDf = pPolicyConfig->GetDeviceFormat(device_id.c_str(), 0, &cur_df);
+        HRESULT hrGetMf = pPolicyConfig->GetMixFormat(device_id.c_str(), &cur_mf);
+        if (SUCCEEDED(hrGetDf) && cur_df && SUCCEEDED(hrGetMf) && cur_mf &&
+            cur_df->nChannels >= 6 && cur_mf->nChannels >= 6) {
+            cur_df->nSamplesPerSec = sample_rate;
+            cur_df->nAvgBytesPerSec = sample_rate * cur_df->nBlockAlign;
+            cur_mf->nSamplesPerSec = sample_rate;
+            cur_mf->nAvgBytesPerSec = sample_rate * cur_mf->nBlockAlign;
+            if (tryApplyPair(cur_df, cur_mf)) {
+                success = true;
+            }
+        }
+        if (cur_df) CoTaskMemFree(cur_df);
+        if (cur_mf) CoTaskMemFree(cur_mf);
+
+        // Step 2: Fallback 6-channel format candidate matrix
+        if (!success) {
+            const DWORD masks[] = {
+                SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
+                    SPEAKER_LOW_FREQUENCY | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT,
+                SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
+                    SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT
+            };
+
+            struct EpCandidate {
+                uint16_t container_bits;
+                uint16_t valid_bits;
+                bool is_float;
+            };
+            const EpCandidate candidates[] = {
+                { 24, 24, false }, // WDM 24-bit packed PCM (standard VB-Cable pin format)
+                { 32, 24, false }, // WDM 24-in-32 PCM
+                { 16, 16, false }, // WDM 16-bit PCM fallback
+                { 32, 32, true  }  // IEEE Float fallback
+            };
+
+            for (DWORD mask : masks) {
+                WAVEFORMATEXTENSIBLE mixFmt{};
+                mixFmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+                mixFmt.Format.nChannels = 6;
+                mixFmt.Format.nSamplesPerSec = sample_rate;
+                mixFmt.Format.wBitsPerSample = 32;
+                mixFmt.Format.nBlockAlign = 6 * sizeof(float);
+                mixFmt.Format.nAvgBytesPerSec = sample_rate * mixFmt.Format.nBlockAlign;
+                mixFmt.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+                mixFmt.Samples.wValidBitsPerSample = 32;
+                mixFmt.dwChannelMask = mask;
+                mixFmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+                for (const auto& c : candidates) {
+                    WAVEFORMATEXTENSIBLE epFmt{};
+                    epFmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+                    epFmt.Format.nChannels = 6;
+                    epFmt.Format.nSamplesPerSec = sample_rate;
+                    epFmt.Format.wBitsPerSample = c.container_bits;
+                    epFmt.Format.nBlockAlign = static_cast<WORD>(6 * (c.container_bits / 8));
+                    epFmt.Format.nAvgBytesPerSec = sample_rate * epFmt.Format.nBlockAlign;
+                    epFmt.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+                    epFmt.Samples.wValidBitsPerSample = c.valid_bits;
+                    epFmt.dwChannelMask = mask;
+                    epFmt.SubFormat = c.is_float ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
+
+                    if (tryApplyPair(reinterpret_cast<WAVEFORMATEX*>(&epFmt),
+                                     reinterpret_cast<WAVEFORMATEX*>(&mixFmt))) {
+                        success = true;
+                        break;
+                    }
+                }
+                if (success) break;
+            }
         }
         pPolicyConfig->Release();
     }
 
+    if (out_last_hr) {
+        *out_last_hr = last_hr;
+    }
     if (SUCCEEDED(hrCom)) {
         CoUninitialize();
     }
     return success;
-}
-
-bool AudioPolicyManager::ConfigureEndpointSurround96k(const std::wstring& device_id) {
-    return ConfigureEndpointFormat(device_id, 96000);
 }
 
 bool AudioPolicyManager::ApplySampleRateToHT306Endpoints(AppState& state, uint32_t sample_rate) {
@@ -673,30 +736,49 @@ bool AudioPolicyManager::ApplySampleRateToHT306Endpoints(AppState& state, uint32
         return false;
     }
 
-    bool any_ok = false;
+    auto formatHrHex = [](HRESULT hr) -> std::string {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
+        return std::string(buf);
+    };
+
+    bool render_ok = false;
+    bool cap_ok = false;
+    HRESULT hr_render = E_FAIL;
+    HRESULT hr_cap = E_FAIL;
+
     std::wstring render_id = GetRenderEndpointId();
     if (!render_id.empty()) {
-        if (ConfigureEndpointFormat(render_id, sample_rate)) {
-            any_ok = true;
+        if (ConfigureEndpointFormat(render_id, sample_rate, &hr_render)) {
+            render_ok = true;
         } else {
             state.AddLog(LogLevel::LOG_WARN, "Format",
-                "Endpoint Render HT306 menolak ubah format ke " + std::to_string(sample_rate) + " Hz (sedang dikunci Exclusive?)");
+                "Endpoint Render HT306 menolak ubah format ke " + std::to_string(sample_rate) +
+                " Hz (hr=" + formatHrHex(hr_render) + ")");
         }
     }
 
     EnsureCaptureEndpointActive();
     std::wstring cap_id = GetCaptureEndpointId();
     if (!cap_id.empty()) {
-        if (ConfigureEndpointFormat(cap_id, sample_rate)) {
-            any_ok = true;
+        if (ConfigureEndpointFormat(cap_id, sample_rate, &hr_cap)) {
+            cap_ok = true;
         } else {
             state.AddLog(LogLevel::LOG_WARN, "Format",
-                "Endpoint Capture (LG HT306 Loopback Stream) menolak ubah format ke " + std::to_string(sample_rate) + " Hz");
+                "Endpoint Capture (LG HT306 Loopback Stream) menolak ubah format ke " + std::to_string(sample_rate) +
+                " Hz (hr=" + formatHrHex(hr_cap) + ")");
         }
     }
 
+    if (render_ok || cap_ok) {
+        state.AddLog(LogLevel::LOG_INFO, "Format",
+            "Format Windows VB-Cable diubah ke " + std::to_string(sample_rate) +
+            " Hz (Render=" + (render_ok ? "OK" : "FAIL") +
+            ", Capture=" + (cap_ok ? "OK" : "FAIL") + ")");
+    }
+
     state.RequestCaptureReinit();
-    return any_ok;
+    return (render_ok || cap_ok);
 }
 
 std::wstring AudioPolicyManager::GetRenderEndpointId() {
@@ -717,31 +799,9 @@ std::wstring AudioPolicyManager::GetCaptureEndpointId() {
     return L"{0.0.1.00000000}." + m_ht306_capture_guid;
 }
 
-bool AudioPolicyManager::RenameEndpoint(const std::wstring& device_id, const std::wstring& new_name) {
-    if (device_id.empty() || new_name.empty()) return false;
-
-    // Extract GUID from endpoint ID "{0.0.0.00000000}.{GUID}"
-    size_t pos = device_id.rfind(L".{");
-    std::wstring guid = (pos != std::wstring::npos) ? device_id.substr(pos + 1) : device_id;
-
-    std::wstring propPath = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render\\" + guid + L"\\Properties";
-    HKEY hPropWrite = NULL;
-    // IMPORTANT: Open with ONLY KEY_SET_VALUE (0x0002), NOT KEY_WRITE, because MMDevices ACL grants
-    // BUILTIN\Users and BUILTIN\Administrators only KEY_QUERY_VALUE | KEY_SET_VALUE (not KEY_CREATE_SUB_KEY).
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, propPath.c_str(), 0, KEY_SET_VALUE, &hPropWrite) == ERROR_SUCCESS) {
-        const wchar_t* newIfName = L"5.1 Surround";
-        RegSetValueExW(hPropWrite, L"{a45c254e-df1c-4efd-8020-67d146a850e0},2", 0, REG_SZ,
-                       (const BYTE*)new_name.c_str(), (DWORD)((new_name.length() + 1) * sizeof(wchar_t)));
-        RegSetValueExW(hPropWrite, L"{b3f8fa53-0004-438e-9003-51a46e139bfc},6", 0, REG_SZ,
-                       (const BYTE*)newIfName, (DWORD)((wcslen(newIfName) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hPropWrite);
-        return true;
-    }
-    return false;
-}
-
 bool AudioPolicyManager::SyncEndpointNames() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_initial_sync_done = true;
 
     HKEY hRenderKey = NULL;
     const wchar_t* renderPath = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render";
@@ -765,8 +825,12 @@ bool AudioPolicyManager::SyncEndpointNames() {
         HKEY hSubKeyRead = NULL;
         DWORD currentState = 0;
         DWORD cbState = sizeof(currentState);
+        DWORD stateType = 0;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, subPath.c_str(), 0, KEY_QUERY_VALUE, &hSubKeyRead) == ERROR_SUCCESS) {
-            RegQueryValueExW(hSubKeyRead, L"DeviceState", NULL, NULL, (LPBYTE)&currentState, &cbState);
+            if (RegQueryValueExW(hSubKeyRead, L"DeviceState", NULL, &stateType, (LPBYTE)&currentState, &cbState) != ERROR_SUCCESS ||
+                stateType != REG_DWORD) {
+                currentState = 0;
+            }
             RegCloseKey(hSubKeyRead);
         }
 
@@ -778,25 +842,11 @@ bool AudioPolicyManager::SyncEndpointNames() {
 
         HKEY hPropKey = NULL;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, propPath.c_str(), 0, KEY_QUERY_VALUE, &hPropKey) == ERROR_SUCCESS) {
-            wchar_t desc[256] = { 0 };
-            wchar_t ifname[256] = { 0 };
-            wchar_t hwId[256] = { 0 };
-            wchar_t subType[256] = { 0 };
-            DWORD cbDesc = sizeof(desc);
-            DWORD cbIfName = sizeof(ifname);
-            DWORD cbHwId = sizeof(hwId);
-            DWORD cbSubType = sizeof(subType);
-
-            RegQueryValueExW(hPropKey, L"{a45c254e-df1c-4efd-8020-67d146a850e0},2", NULL, NULL, (LPBYTE)desc, &cbDesc);
-            RegQueryValueExW(hPropKey, L"{b3f8fa53-0004-438e-9003-51a46e139bfc},6", NULL, NULL, (LPBYTE)ifname, &cbIfName);
-            RegQueryValueExW(hPropKey, L"{a8b865dd-2e3d-4094-ad97-e593a70c75d6},8", NULL, NULL, (LPBYTE)hwId, &cbHwId);
-            RegQueryValueExW(hPropKey, L"{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},8", NULL, NULL, (LPBYTE)subType, &cbSubType);
+            std::wstring wDesc = QueryRegStringSafe(hPropKey, L"{a45c254e-df1c-4efd-8020-67d146a850e0},2");
+            std::wstring wIfName = QueryRegStringSafe(hPropKey, L"{b3f8fa53-0004-438e-9003-51a46e139bfc},6");
+            std::wstring wHwId = QueryRegStringSafe(hPropKey, L"{a8b865dd-2e3d-4094-ad97-e593a70c75d6},8");
+            std::wstring wSubType = QueryRegStringSafe(hPropKey, L"{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},8");
             RegCloseKey(hPropKey);
-
-            std::wstring wDesc(desc);
-            std::wstring wIfName(ifname);
-            std::wstring wHwId(hwId);
-            std::wstring wSubType(subType);
 
             bool isVbCable = (wHwId.find(L"VBAudioVACWDM") != std::wstring::npos) ||
                              (wDesc.find(L"CABLE") != std::wstring::npos) ||
@@ -880,8 +930,12 @@ bool AudioPolicyManager::SyncEndpointNames() {
             HKEY hSubKeyRead = NULL;
             DWORD currentState = 0;
             DWORD cbState = sizeof(currentState);
+            DWORD stateType = 0;
             if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, subPath.c_str(), 0, KEY_QUERY_VALUE, &hSubKeyRead) == ERROR_SUCCESS) {
-                RegQueryValueExW(hSubKeyRead, L"DeviceState", NULL, NULL, (LPBYTE)&currentState, &cbState);
+                if (RegQueryValueExW(hSubKeyRead, L"DeviceState", NULL, &stateType, (LPBYTE)&currentState, &cbState) != ERROR_SUCCESS ||
+                    stateType != REG_DWORD) {
+                    currentState = 0;
+                }
                 RegCloseKey(hSubKeyRead);
             }
 
@@ -892,21 +946,10 @@ bool AudioPolicyManager::SyncEndpointNames() {
 
             HKEY hPropKey = NULL;
             if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, propPath.c_str(), 0, KEY_QUERY_VALUE, &hPropKey) == ERROR_SUCCESS) {
-                wchar_t desc[256] = { 0 };
-                wchar_t ifname[256] = { 0 };
-                wchar_t hwId[256] = { 0 };
-                DWORD cbDesc = sizeof(desc);
-                DWORD cbIfName = sizeof(ifname);
-                DWORD cbHwId = sizeof(hwId);
-
-                RegQueryValueExW(hPropKey, L"{a45c254e-df1c-4efd-8020-67d146a850e0},2", NULL, NULL, (LPBYTE)desc, &cbDesc);
-                RegQueryValueExW(hPropKey, L"{b3f8fa53-0004-438e-9003-51a46e139bfc},6", NULL, NULL, (LPBYTE)ifname, &cbIfName);
-                RegQueryValueExW(hPropKey, L"{a8b865dd-2e3d-4094-ad97-e593a70c75d6},8", NULL, NULL, (LPBYTE)hwId, &cbHwId);
+                std::wstring wDesc = QueryRegStringSafe(hPropKey, L"{a45c254e-df1c-4efd-8020-67d146a850e0},2");
+                std::wstring wIfName = QueryRegStringSafe(hPropKey, L"{b3f8fa53-0004-438e-9003-51a46e139bfc},6");
+                std::wstring wHwId = QueryRegStringSafe(hPropKey, L"{a8b865dd-2e3d-4094-ad97-e593a70c75d6},8");
                 RegCloseKey(hPropKey);
-
-                std::wstring wDesc(desc);
-                std::wstring wIfName(ifname);
-                std::wstring wHwId(hwId);
 
                 bool isVbCapture = (wHwId.find(L"VBAudioVACWDM") != std::wstring::npos) ||
                                    (wDesc.find(L"CABLE Output") != std::wstring::npos) ||
@@ -974,7 +1017,7 @@ static std::string FindVBCableSetupExe() {
     return "";
 }
 
-bool AudioPolicyManager::InstallDriver(HWND parent_hwnd) {
+bool AudioPolicyManager::InstallDriver(HWND parent_hwnd, const std::atomic<bool>* running_flag) {
     std::string setup_exe = FindVBCableSetupExe();
     if (setup_exe.empty()) {
         MessageBoxA(parent_hwnd, 
@@ -983,9 +1026,13 @@ bool AudioPolicyManager::InstallDriver(HWND parent_hwnd) {
         return false;
     }
 
-    char setup_dir[MAX_PATH] = { 0 };
-    strcpy_s(setup_dir, sizeof(setup_dir), setup_exe.c_str());
-    PathRemoveFileSpecA(setup_dir);
+    std::string setup_dir = setup_exe;
+    size_t last_sep = setup_dir.find_last_of("\\/");
+    if (last_sep != std::string::npos) {
+        setup_dir.erase(last_sep);
+    } else {
+        setup_dir.clear();
+    }
 
     // Initialize COM for ShellExecuteEx (STA is recommended for shell operations)
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -998,7 +1045,7 @@ bool AudioPolicyManager::InstallDriver(HWND parent_hwnd) {
     sei.lpVerb = "runas"; // Elevate with Windows UAC prompt
     sei.lpFile = setup_exe.c_str();
     sei.lpParameters = NULL; // Interactive GUI installer
-    sei.lpDirectory = setup_dir;
+    sei.lpDirectory = setup_dir.empty() ? NULL : setup_dir.c_str();
     sei.nShow = SW_SHOWNORMAL;
 
     BOOL shellRet = ShellExecuteExA(&sei);
@@ -1013,13 +1060,26 @@ bool AudioPolicyManager::InstallDriver(HWND parent_hwnd) {
     }
 
     if (sei.hProcess) {
-        // Wait for setup process (user clicking 'Install Driver' dialog, up to 120s)
-        WaitForSingleObject(sei.hProcess, 120000);
+        // Wait for setup process (up to 120s) in 250ms slices so app shutdown never hangs
+        for (int wait_slice = 0; wait_slice < 480; ++wait_slice) {
+            if (running_flag && !running_flag->load()) {
+                CloseHandle(sei.hProcess);
+                return false;
+            }
+            if (WaitForSingleObject(sei.hProcess, 250) == WAIT_OBJECT_0) {
+                break;
+            }
+        }
         CloseHandle(sei.hProcess);
     }
 
-    // Windows PnP and AudioEndpointBuilder automatically discover the new WHQL endpoint
-    Sleep(1500);
+    // Windows PnP and AudioEndpointBuilder automatically discover the new WHQL endpoint (interruptible 1.5s wait)
+    for (int i = 0; i < 15; ++i) {
+        if (running_flag && !running_flag->load()) {
+            return false;
+        }
+        Sleep(100);
+    }
 
     // Run automated script to set friendly name to 'LG HT306 Home Theater' and disable 16ch
     SyncEndpointNames();
@@ -1027,8 +1087,7 @@ bool AudioPolicyManager::InstallDriver(HWND parent_hwnd) {
     // Check if installation succeeded
     AudioDriverStatus st = CheckDriverStatus();
     if (st.installed) {
-        RenameEndpoint(st.endpoint_id, L"LG HT306 Home Theater");
-        ConfigureEndpointSurround96k(st.endpoint_id);
+        ConfigureEndpointFormat(st.endpoint_id, 96000);
     }
 
     return st.installed;

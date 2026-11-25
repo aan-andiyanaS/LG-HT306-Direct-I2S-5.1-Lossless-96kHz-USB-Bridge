@@ -5,6 +5,8 @@
 #include <stdarg.h>
 
 #if defined(PICO_BUILD) || defined(PICO_RP2350) || defined(PICO_RP2040)
+#include "pico/stdlib.h"
+#include "hardware/timer.h"
 #include "tusb.h"
 #define HT306_USB_RAM_FUNC(fn) __not_in_flash_func(fn)
 #else
@@ -33,11 +35,33 @@ static uint8_t  g_rx_accum_buf[HT306_MAX_PACKET_BYTES];
 static uint16_t g_rx_accum_pos  = 0U;
 static uint16_t g_rx_target_len = 0U;
 
+void HT306_USB_RAM_FUNC(ht306_usb_reset_reassembler)(void) {
+    g_rx_accum_pos  = 0U;
+    g_rx_target_len = 0U;
+}
+
 void HT306_USB_RAM_FUNC(ht306_usb_process_vendor_stream)(const uint8_t *buf, uint32_t count) {
     const uint16_t min_pkt_len = (uint16_t)(sizeof(HT306_LosslessHeader_t) + (HT306_NUM_CHANNELS * 3U));
 
-    for (uint32_t i = 0U; i < count; ++i) {
-        uint8_t b = buf[i];
+    uint32_t i = 0U;
+    while (i < count) {
+        if (g_rx_accum_pos >= 4U && g_rx_target_len >= min_pkt_len && g_rx_target_len <= HT306_MAX_PACKET_BYTES) {
+            uint32_t need = (uint32_t)(g_rx_target_len - g_rx_accum_pos);
+            uint32_t avail = count - i;
+            uint32_t to_copy = (avail < need) ? avail : need;
+            memcpy(&g_rx_accum_buf[g_rx_accum_pos], &buf[i], to_copy);
+            g_rx_accum_pos = (uint16_t)(g_rx_accum_pos + to_copy);
+            i += to_copy;
+
+            if (g_rx_accum_pos == g_rx_target_len) {
+                (void)ht306_usb_enqueue_lossless_packet(g_rx_accum_buf, g_rx_target_len);
+                g_rx_accum_pos  = 0U;
+                g_rx_target_len = 0U;
+            }
+            continue;
+        }
+
+        uint8_t b = buf[i++];
 
         if (g_rx_accum_pos == 0U) {
             if (b == (uint8_t)(HT306_SYNC_WORD & 0xFFU)) {
@@ -55,18 +79,6 @@ void HT306_USB_RAM_FUNC(ht306_usb_process_vendor_stream)(const uint8_t *buf, uin
             } else {
                 g_rx_accum_pos = 0U;
             }
-            continue;
-        }
-
-        if (g_rx_accum_pos >= sizeof(g_rx_accum_buf)) {
-            /* Guard buffer overflow: jika byte saat ini adalah awal sync baru, simpan */
-            if (b == (uint8_t)(HT306_SYNC_WORD & 0xFFU)) {
-                g_rx_accum_buf[0] = b;
-                g_rx_accum_pos = 1U;
-            } else {
-                g_rx_accum_pos = 0U;
-            }
-            g_rx_target_len = 0U;
             continue;
         }
 
@@ -89,13 +101,6 @@ void HT306_USB_RAM_FUNC(ht306_usb_process_vendor_stream)(const uint8_t *buf, uin
                 }
                 g_rx_target_len = 0U;
             }
-            continue;
-        }
-
-        if (g_rx_accum_pos >= 4U && g_rx_accum_pos == g_rx_target_len) {
-            (void)ht306_usb_enqueue_lossless_packet(g_rx_accum_buf, g_rx_target_len);
-            g_rx_accum_pos  = 0U;
-            g_rx_target_len = 0U;
         }
     }
 }
@@ -254,15 +259,52 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     return g_desc_str;
 }
 
+static uint32_t g_rx_last_byte_us = 0U;
+static volatile bool g_bootsel_requested = false;
+
+void tud_umount_cb(void) {
+    ht306_usb_reset_reassembler();
+}
+
+void tud_suspend_cb(bool remote_wakeup_en) {
+    (void)remote_wakeup_en;
+    ht306_usb_reset_reassembler();
+}
+
+void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const *p_line_coding) {
+    (void)itf;
+    if (p_line_coding != NULL && p_line_coding->bit_rate == 1200U) {
+        g_bootsel_requested = true;
+    }
+}
+
+bool ht306_usb_bootsel_requested(void) {
+    return g_bootsel_requested;
+}
+
 void HT306_USB_RAM_FUNC(ht306_usb_task)(void) {
     tud_task();
 
-    while (tud_vendor_available() > 0U) {
-        uint8_t chunk[256];
+    if (tud_vendor_available() == 0U && g_rx_accum_pos > 0U &&
+        (uint32_t)(time_us_32() - g_rx_last_byte_us) >= 50000U) {
+        ht306_usb_reset_reassembler();
+    }
+
+    bool read_any = false;
+    while (tud_vendor_available() > 0U && ht306_usb_packet_queue_free_slots() >= 2U) {
+        /* 64-byte chunk matches USB Full-Speed EP size; guarantees at most 1 full 48-frame
+         * silence packet (77 B) or 2 min_pkt_len (32 B) packets per read -> 0 drops with free_slots >= 2 */
+        uint8_t chunk[64];
         uint32_t n = tud_vendor_read(chunk, sizeof(chunk));
-        if (n > 0U) {
-            ht306_usb_process_vendor_stream(chunk, n);
+        if (n == 0U) {
+            break;
         }
+        read_any = true;
+        ht306_usb_process_vendor_stream(chunk, n);
+    }
+
+    if (read_any && g_rx_accum_pos > 0U) {
+        g_rx_last_byte_us = time_us_32();
     }
 }
 
@@ -300,6 +342,7 @@ void ht306_usb_log_printf(const char *fmt, ...) {
 #else
 
 void ht306_usb_task(void) {}
+bool ht306_usb_bootsel_requested(void) { return false; }
 void ht306_usb_log(const char *msg) { (void)msg; }
 void ht306_usb_log_printf(const char *fmt, ...) { (void)fmt; }
 

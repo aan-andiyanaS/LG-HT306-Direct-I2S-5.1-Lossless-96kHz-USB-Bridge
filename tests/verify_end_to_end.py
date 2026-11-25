@@ -16,11 +16,19 @@ HT306_RICE_ESCAPE_QUOTIENT = 15
 HT306_ESCAPE_RAW_BITS = 25
 HT306_ESCAPE_RAW_BITS_32 = 32
 HT306_RICE_K_MASK = 0x1F
+HT306_MAX_PACKET_BYTES = 1200
 
 HT306_FLAG_RATE_96KHZ = 1 << 0
 HT306_FLAG_BITDEPTH_24 = 1 << 1
 HT306_FLAG_CHANNELS_8 = 1 << 2
 HT306_FLAG_BITDEPTH_32 = 1 << 3
+HT306_FLAG_VERBATIM_RAW = 1 << 4
+HT306_FLAG_SUPPORTED_MASK = (
+    HT306_FLAG_RATE_96KHZ
+    | HT306_FLAG_BITDEPTH_24
+    | HT306_FLAG_BITDEPTH_32
+    | HT306_FLAG_VERBATIM_RAW
+)
 
 
 def sign_extend_24(val: int) -> int:
@@ -182,7 +190,24 @@ def encode_lossless_subframe(frames_6ch, seq: int, is_32bit: bool = False) -> by
                 bw.put_bits(zz, escape_bits)
 
     payload = bytes(anchor) + bw.flush()
-    payload_crc = crc8(payload)
+    bytes_per_sample = 4 if is_32bit else 3
+    raw_payload_len = num_frames * HT306_NUM_CHANNELS * bytes_per_sample
+    flags = (HT306_FLAG_RATE_96KHZ | HT306_FLAG_BITDEPTH_32) if is_32bit else (HT306_FLAG_RATE_96KHZ | HT306_FLAG_BITDEPTH_24)
+
+    if len(payload) > raw_payload_len:
+        raw_buf = bytearray()
+        for n in range(num_frames):
+            for ch in range(HT306_NUM_CHANNELS):
+                if is_32bit:
+                    u = wrap_32(frames_6ch[n][ch]) & 0xFFFFFFFF
+                    raw_buf.extend([u & 0xFF, (u >> 8) & 0xFF, (u >> 16) & 0xFF, (u >> 24) & 0xFF])
+                else:
+                    u = sign_extend_24(frames_6ch[n][ch]) & 0x00FFFFFF
+                    raw_buf.extend([u & 0xFF, (u >> 8) & 0xFF, (u >> 16) & 0xFF])
+        payload = bytes(raw_buf)
+        flags |= HT306_FLAG_VERBATIM_RAW
+        rice_k_hdr = [0] * HT306_NUM_CHANNELS
+
     total_pkt_len = 14 + len(payload)
 
     header = bytearray(14)
@@ -191,11 +216,11 @@ def encode_lossless_subframe(frames_6ch, seq: int, is_32bit: bool = False) -> by
     header[2] = total_pkt_len & 0xFF
     header[3] = (total_pkt_len >> 8) & 0xFF
     header[4] = seq & 0xFF
-    header[5] = (HT306_FLAG_RATE_96KHZ | HT306_FLAG_BITDEPTH_32) if is_32bit else (HT306_FLAG_RATE_96KHZ | HT306_FLAG_BITDEPTH_24)
+    header[5] = flags
     header[6] = num_frames
     for ch in range(HT306_NUM_CHANNELS):
         header[7 + ch] = rice_k_hdr[ch]
-    header[13] = payload_crc
+    header[13] = crc8(bytes(header[2:13]) + payload)
 
     return bytes(header) + payload
 
@@ -205,24 +230,43 @@ def decode_lossless_subframe(packet: bytes):
     assert sync == HT306_SYNC_WORD, "Invalid sync word"
     pkt_len = packet[2] | (packet[3] << 8)
     assert pkt_len == len(packet), f"Packet len mismatch: {pkt_len} != {len(packet)}"
+    expected_crc = packet[13]
+    payload = packet[14:]
+    assert crc8(packet[2:13] + payload) == expected_crc, "CRC8 mismatch"
+
     flags = packet[5]
+    assert (flags & ~HT306_FLAG_SUPPORTED_MASK) == 0, f"Unsupported flags: 0x{flags:02X}"
     is_32bit = bool(flags & HT306_FLAG_BITDEPTH_32)
-    bytes_per_anchor = 4 if is_32bit else 3
-    anc_sz = HT306_NUM_CHANNELS * bytes_per_anchor
+    is_verbatim = bool(flags & HT306_FLAG_VERBATIM_RAW)
+    bytes_per_sample = 4 if is_32bit else 3
+    anc_sz = HT306_NUM_CHANNELS * bytes_per_sample
     escape_bits = HT306_ESCAPE_RAW_BITS_32 if is_32bit else HT306_ESCAPE_RAW_BITS
     max_k = 30 if is_32bit else 22
 
     num_frames = packet[6]
     rice_k_hdr = [packet[7 + ch] for ch in range(HT306_NUM_CHANNELS)]
-    expected_crc = packet[13]
-    payload = packet[14:]
-    assert crc8(payload) == expected_crc, "CRC8 mismatch"
+    decoded = [[0] * HT306_NUM_CHANNELS for _ in range(num_frames)]
+
+    if is_verbatim:
+        expected_len = num_frames * HT306_NUM_CHANNELS * bytes_per_sample
+        assert len(payload) == expected_len, f"Verbatim len mismatch: {len(payload)} != {expected_len}"
+        off = 0
+        for n in range(num_frames):
+            for ch in range(HT306_NUM_CHANNELS):
+                if is_32bit:
+                    u32 = payload[off] | (payload[off + 1] << 8) | (payload[off + 2] << 16) | (payload[off + 3] << 24)
+                    off += 4
+                    decoded[n][ch] = wrap_32(u32)
+                else:
+                    u24 = payload[off] | (payload[off + 1] << 8) | (payload[off + 2] << 16)
+                    off += 3
+                    decoded[n][ch] = sign_extend_24(u24)
+        return decoded
 
     p1 = [0] * HT306_NUM_CHANNELS
     p2 = [0] * HT306_NUM_CHANNELS
     p3 = [0] * HT306_NUM_CHANNELS
     p4 = [0] * HT306_NUM_CHANNELS
-    decoded = [[0] * HT306_NUM_CHANNELS for _ in range(num_frames)]
 
     for ch in range(HT306_NUM_CHANNELS):
         if is_32bit:
@@ -425,7 +469,7 @@ def main():
                 rx_accum = bytearray([0x5A]) if rx_accum[1] == 0x5A else bytearray()
             elif len(rx_accum) == 4:
                 target_len = rx_accum[2] | (rx_accum[3] << 8)
-                if target_len < 32 or target_len > 1020:
+                if target_len < 32 or target_len > HT306_MAX_PACKET_BYTES:
                     rx_accum = bytearray([0x5A, 0xA5]) if target_len == HT306_SYNC_WORD else bytearray()
             elif len(rx_accum) > 4:
                 target_len = rx_accum[2] | (rx_accum[3] << 8)
@@ -435,6 +479,31 @@ def main():
 
     assert reassembled_packets == expected_packets, "USB 64-byte Bulk reassembly gagal!"
     print(f"  -> {len(reassembled_packets)} paket variabel (24-bit & 32-bit) berhasil disatukan kembali [OK]")
+
+    print("\n=== [TEST 5] Verifikasi Verbatim Fallback & Proteksi Header CRC-8 ===")
+    rng = 0x13579BDF
+    noise_24 = []
+    for _ in range(HT306_SUBFRAME_SAMPLES):
+        row = []
+        for _ in range(HT306_NUM_CHANNELS):
+            rng ^= (rng << 13) & 0xFFFFFFFF
+            rng ^= (rng >> 17) & 0xFFFFFFFF
+            rng ^= (rng << 5) & 0xFFFFFFFF
+            row.append(sign_extend_24(rng))
+        noise_24.append(row)
+    pkt_v24 = encode_lossless_subframe(noise_24, 99, is_32bit=False)
+    assert (pkt_v24[5] & HT306_FLAG_VERBATIM_RAW) != 0, "24-bit noise harus memakai HT306_FLAG_VERBATIM_RAW"
+    assert len(pkt_v24) == 14 + HT306_SUBFRAME_SAMPLES * HT306_NUM_CHANNELS * 3
+    assert decode_lossless_subframe(pkt_v24) == noise_24
+
+    corrupted_hdr = bytearray(pkt_v24)
+    corrupted_hdr[9] ^= 0x01  # rice_k[2]
+    try:
+        decode_lossless_subframe(bytes(corrupted_hdr))
+        raise AssertionError("Korupsi header rice_k tidak terdeteksi!")
+    except AssertionError as e:
+        assert "CRC8 mismatch" in str(e)
+    print(f"  -> Verbatim 24-bit ({len(pkt_v24)} B) & Header CRC-8 Guard [OK]")
     print("\n[SEMUA VERIFIKASI & AUDIT LULUS 100%]")
 
 

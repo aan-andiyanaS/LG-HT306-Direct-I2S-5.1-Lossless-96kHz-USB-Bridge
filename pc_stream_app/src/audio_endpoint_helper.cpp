@@ -55,7 +55,10 @@ void AudioEndpointHelper::EnumerateDevices(AppState& state) {
                         if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var_name))) {
                             AudioEndpointInfo info;
                             if (dev_id) info.id = dev_id;
-                            info.name = WideToUtf8(var_name.pwszVal ? var_name.pwszVal : L"Unknown Audio Device");
+                            const wchar_t* wide_name = (var_name.vt == VT_LPWSTR && var_name.pwszVal)
+                                ? var_name.pwszVal
+                                : L"Unknown Audio Device";
+                            info.name = WideToUtf8(wide_name);
                             next_devices.push_back(info);
                         }
                         PropVariantClear(&var_name);
