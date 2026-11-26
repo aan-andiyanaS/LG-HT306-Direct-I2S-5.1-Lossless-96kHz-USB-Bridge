@@ -3,17 +3,17 @@
 ; Target Board : Waveshare RP2350-Zero (RP2350A @ 150 MHz)
 ; =============================================================================
 ; Pemetaan Pin:
-;   Side-set pin 0 (GP2) : I2S_BCK   (Bit Clock: 64 * Fs, 50% duty cycle)
-;   Side-set pin 1 (GP3) : I2S_LRCK  (Word Select: 0 = Left, 1 = Right)
-;   OUT pin 0      (GP4) : ADATA0    (Front Left / Front Right)
-;   OUT pin 1      (GP5) : ADATA1    (Rear Surround Left / Right)
+;   Side-set pin 0 (GP2) : I2S_LRCK  (Word Select Philips I2S: 0 = Left, 1 = Right)
+;   Side-set pin 1 (GP3) : I2S_BCK   (Bit Clock: 64 * Fs, 50% duty cycle)
+;   OUT pin 0      (GP4) : ADATA0    (Front Right / Rear Left)
+;   OUT pin 1      (GP5) : ADATA1    (Rear Right / Front Left)
 ;   OUT pin 2      (GP6) : ADATA2    (Center / Subwoofer LFE)
 ;   OUT pin 3      (GP7) : ADATA3    (Back Surround Left / Right - 7.1 Expansion)
 ;
-; Catatan Timing (Hasil Audit):
+; Catatan Timing (Philips I2S 1-BCK Delay):
 ; - Seluruh 32 instruksi `out pins, 4` dieksekusi tepat pada FALLING edge BCK
-;   (side 0b00 / side 0b10), memberikan waktu setup penuh (1/2 periode BCK)
-;   sebelum PS9850 membaca data pada RISING edge BCK (side 0b01 / side 0b11).
+;   (side 0b00 / side 0b01), memberikan waktu setup penuh (1/2 periode BCK)
+;   sebelum PS9850 membaca data pada RISING edge BCK (side 0b10 / side 0b11).
 ; - Transisi LRCK terjadi tepat 1 siklus BCK sebelum MSB sesuai spesifikasi Philips I2S.
 ; - Total tepat 64 siklus PIO untuk Kiri + 64 siklus PIO untuk Kanan = 128 siklus/frame.
 ; =============================================================================
@@ -23,16 +23,16 @@
 
 .wrap_target
     ; --- KANAL KIRI (LRCK = 0, 32 Bit Clock = 64 Siklus PIO) ---
-    set x, 30           side 0b01   ; Rising edge BCK untuk LSB Kanan sebelumnya + muat counter 31 bit
+    set x, 30           side 0b10   ; Rising edge BCK untuk LSB Kanan sebelumnya + muat counter 31 bit
 left_loop:
     out pins, 4         side 0b00   ; Falling edge BCK: keluarkan bit ke-(31..1) Kiri (setup time penuh)
-    jmp x-- left_loop   side 0b01   ; Rising edge BCK : PS9850 membaca bit ke-(31..1) Kiri (31 iterasi)
-    out pins, 4         side 0b10   ; Falling edge BCK: keluarkan bit ke-0 (LSB) Kiri + LRCK naik ke 1
+    jmp x-- left_loop   side 0b10   ; Rising edge BCK : PS9850 membaca bit ke-(31..1) Kiri (31 iterasi)
+    out pins, 4         side 0b01   ; Falling edge BCK: keluarkan bit ke-0 (LSB) Kiri + LRCK naik ke 1
 
     ; --- KANAL KANAN (LRCK = 1, 32 Bit Clock = 64 Siklus PIO) ---
     set x, 30           side 0b11   ; Rising edge BCK untuk LSB Kiri + muat counter 31 bit Kanan
 right_loop:
-    out pins, 4         side 0b10   ; Falling edge BCK: keluarkan bit ke-(31..1) Kanan (setup time penuh)
+    out pins, 4         side 0b01   ; Falling edge BCK: keluarkan bit ke-(31..1) Kanan (setup time penuh)
     jmp x-- right_loop  side 0b11   ; Rising edge BCK : PS9850 membaca bit ke-(31..1) Kanan (31 iterasi)
     out pins, 4         side 0b00   ; Falling edge BCK: keluarkan bit ke-0 (LSB) Kanan + LRCK turun ke 0
 .wrap

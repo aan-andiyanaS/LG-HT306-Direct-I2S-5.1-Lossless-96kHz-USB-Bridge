@@ -17,6 +17,7 @@
 #if !defined(PICO_BUILD) || defined(HT306_ENABLE_EMBEDDED_ENCODER)
 /* Buffer statis di SRAM untuk ZigZag encoding (hanya dikompilasi pada PC host / unit test) */
 static uint32_t s_zz_buf[HT306_MAX_SUBFRAME_SAMPLES][HT306_NUM_CHANNELS];
+static uint32_t s_zz_cand[4][HT306_MAX_SUBFRAME_SAMPLES];
 
 typedef struct {
     uint8_t *buf;
@@ -96,6 +97,24 @@ static inline int32_t sext24(int32_t v) {
     return (u ^ 0x00800000) - 0x00800000;
 }
 
+static inline int32_t shift_sample_24(int32_t raw, uint8_t shift_bits) {
+    int32_t s = sext24(raw);
+    if (shift_bits == 0U) {
+        return s;
+    }
+    int32_t half = 1 << (shift_bits - 1U);
+    int32_t max_v = (1 << (23U - shift_bits)) - 1;
+    int32_t min_v = -(1 << (23U - shift_bits));
+    int32_t q = (s >= 0) ? ((s + half) >> shift_bits) : -(((-s) + half) >> shift_bits);
+    if (q > max_v) {
+        q = max_v;
+    }
+    if (q < min_v) {
+        q = min_v;
+    }
+    return q;
+}
+
 static inline uint32_t zz_enc(int32_t r) {
     uint32_t u = (uint32_t)r;
     return (u << 1U) ^ (0U - (u >> 31U));
@@ -173,6 +192,31 @@ uint8_t HT306_RAM_FUNC(ht306_crc8_update)(uint8_t init, const uint8_t *data, siz
 }
 
 #if !defined(PICO_BUILD) || defined(HT306_ENABLE_EMBEDDED_ENCODER)
+static inline int32_t predict_by_code(
+    uint8_t pred_code,
+    uint8_t n,
+    bool is_32bit,
+    int32_t p1,
+    int32_t p2,
+    int32_t p3,
+    int32_t p4)
+{
+    if (pred_code == 1U) {
+        return p1;
+    }
+    if (pred_code == 2U) {
+        if (n == 1U) {
+            return p1;
+        }
+        uint32_t u = (2U * (uint32_t)p1) - (uint32_t)p2;
+        return is_32bit ? (int32_t)u : sext24((int32_t)u);
+    }
+    if (pred_code == 3U) {
+        return 0;
+    }
+    return is_32bit ? predict_order4_32(n, p1, p2, p3, p4) : predict_order4_24(n, p1, p2, p3, p4);
+}
+
 HT306_CodecStatus_t ht306_lossless_encode_frame_flags(
     const int32_t *pcm_in,
     uint8_t num_frames,
@@ -191,33 +235,47 @@ HT306_CodecStatus_t ht306_lossless_encode_frame_flags(
 
     if (!pcm_in || !packet_out || !packet_len_out || num_frames == 0U ||
         num_frames > HT306_MAX_SUBFRAME_SAMPLES ||
-        (flags & ~HT306_FLAG_SUPPORTED_MASK) != 0U) {
+        (flags & ~HT306_FLAG_SUPPORTED_MASK) != 0U ||
+        (is_32bit && (flags & HT306_FLAG_SHIFT_MASK) != 0U)) {
         return HT306_CODEC_ERR_INVALID_ARG;
     }
     if (packet_out_cap < (hdr_sz + anc_sz)) {
         return HT306_CODEC_ERR_BUFFER_TOO_SMALL;
     }
 
-    const size_t raw_payload_len = (size_t)num_frames * HT306_NUM_CHANNELS * bytes_per_sample;
+    uint8_t shift_code = (uint8_t)((flags & HT306_FLAG_SHIFT_MASK) >> HT306_FLAG_SHIFT_SHIFT);
+    bool use_verbatim = (flags & HT306_FLAG_VERBATIM_RAW) != 0U;
+
+    if (!is_32bit && shift_code == 0U && !use_verbatim) {
+        uint32_t all_or = 0U;
+        const size_t total_samples = (size_t)num_frames * HT306_NUM_CHANNELS;
+        for (size_t i = 0U; i < total_samples; ++i) {
+            all_or |= ((uint32_t)sext24(pcm_in[i]) & 0x00FFFFFFU);
+        }
+        if (all_or != 0U && (all_or & 0xFFU) == 0U) {
+            shift_code = 4U; /* 16-in-24 bit-exact wasted-bits removal */
+        }
+    }
+
+    const uint8_t shift_bits = (uint8_t)(shift_code * 2U);
+    const size_t bytes_per_verbatim = is_32bit ? 4U : ((shift_bits >= 8U && num_frames >= 2U) ? 2U : 3U);
+    const size_t raw_payload_len = (size_t)num_frames * HT306_NUM_CHANNELS * bytes_per_verbatim;
+
     HT306_LosslessHeader_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.sync_word  = HT306_SYNC_WORD;
     hdr.sequence   = sequence;
-    hdr.flags      = (uint8_t)(flags & ~HT306_FLAG_VERBATIM_RAW);
+    hdr.flags      = (uint8_t)((flags & ~(HT306_FLAG_VERBATIM_RAW | HT306_FLAG_SHIFT_MASK)) |
+                               HT306_FLAG_ENCODE_SHIFT(shift_code));
     hdr.num_frames = num_frames;
 
     uint8_t *payload = packet_out + hdr_sz;
     size_t total_payload = 0U;
-    bool use_verbatim = (flags & HT306_FLAG_VERBATIM_RAW) != 0U;
 
     if (!use_verbatim) {
-        uint64_t sum_zz[HT306_NUM_CHANNELS] = {0};
-        int32_t  p1[HT306_NUM_CHANNELS], p2[HT306_NUM_CHANNELS], p3[HT306_NUM_CHANNELS], p4[HT306_NUM_CHANNELS];
-
         for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-            int32_t s0 = is_32bit ? pcm_in[ch] : sext24(pcm_in[ch]);
+            int32_t s0 = is_32bit ? pcm_in[ch] : shift_sample_24(pcm_in[ch], shift_bits);
             uint32_t u0 = (uint32_t)s0;
-            p1[ch] = p2[ch] = p3[ch] = p4[ch] = s0;
             if (is_32bit) {
                 payload[ch * 4U + 0U] = (uint8_t)(u0 & 0xFFU);
                 payload[ch * 4U + 1U] = (uint8_t)((u0 >> 8U) & 0xFFU);
@@ -228,34 +286,60 @@ HT306_CodecStatus_t ht306_lossless_encode_frame_flags(
                 payload[ch * 3U + 1U] = (uint8_t)((u0 >> 8U) & 0xFFU);
                 payload[ch * 3U + 2U] = (uint8_t)((u0 >> 16U) & 0xFFU);
             }
-        }
 
-        for (uint8_t n = 1U; n < num_frames; ++n) {
-            const int32_t *row = &pcm_in[(size_t)n * HT306_NUM_CHANNELS];
-            for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-                int32_t s = is_32bit ? row[ch] : sext24(row[ch]);
-                int32_t res;
-                if (is_32bit) {
-                    int32_t pred = predict_order4_32(n, p1[ch], p2[ch], p3[ch], p4[ch]);
-                    res = (int32_t)((uint32_t)s - (uint32_t)pred);
-                } else {
-                    res = sext24(s - predict_order4_24(n, p1[ch], p2[ch], p3[ch], p4[ch]));
+            uint8_t  best_pred = 0U;
+            uint8_t  best_k    = 0U;
+            uint32_t best_bits = 0xFFFFFFFFU;
+
+            for (uint8_t pred_code = 0U; pred_code < 4U; ++pred_code) {
+                int32_t p1 = s0, p2 = s0, p3 = s0, p4 = s0;
+                uint64_t sum_zz = 0ULL;
+
+                for (uint8_t n = 1U; n < num_frames; ++n) {
+                    int32_t raw_s = pcm_in[(size_t)n * HT306_NUM_CHANNELS + ch];
+                    int32_t s = is_32bit ? raw_s : shift_sample_24(raw_s, shift_bits);
+                    int32_t pred = predict_by_code(pred_code, n, is_32bit, p1, p2, p3, p4);
+                    int32_t res = is_32bit ? (int32_t)((uint32_t)s - (uint32_t)pred) : sext24(s - pred);
+                    uint32_t zz = zz_enc(res);
+                    s_zz_cand[pred_code][n] = zz;
+                    if (pred_code != 0U || n >= 3U || num_frames <= 3U) {
+                        sum_zz += zz;
+                    }
+                    p4 = p3;
+                    p3 = p2;
+                    p2 = p1;
+                    p1 = s;
                 }
-                uint32_t zz = zz_enc(res);
-                s_zz_buf[n][ch] = zz;
-                if (n >= 3U || num_frames <= 3U) {
-                    sum_zz[ch] += zz;
+
+                uint8_t steady_cnt = (pred_code == 0U && num_frames > 3U)
+                                   ? (uint8_t)(num_frames - 3U)
+                                   : ((num_frames > 1U) ? (uint8_t)(num_frames - 1U) : 1U);
+                uint8_t cand_k = optimal_rice_k(sum_zz, steady_cnt, max_k);
+                uint32_t cand_bits = 0U;
+
+                for (uint8_t n = 1U; n < num_frames; ++n) {
+                    uint8_t k = (pred_code == 0U && n < 3U && cand_k <= 16U)
+                              ? (uint8_t)(cand_k + 6U)
+                              : cand_k;
+                    uint32_t q = s_zz_cand[pred_code][n] >> k;
+                    if (q < HT306_RICE_ESCAPE_QUOTIENT) {
+                        cand_bits += q + 1U + k;
+                    } else {
+                        cand_bits += (uint32_t)(HT306_RICE_ESCAPE_QUOTIENT + 1U + escape_bits);
+                    }
                 }
-                p4[ch] = p3[ch];
-                p3[ch] = p2[ch];
-                p2[ch] = p1[ch];
-                p1[ch] = s;
+
+                if (cand_bits < best_bits) {
+                    best_bits = cand_bits;
+                    best_pred = pred_code;
+                    best_k    = cand_k;
+                }
             }
-        }
 
-        uint8_t steady_cnt = (num_frames > 3U) ? (uint8_t)(num_frames - 3U) : 1U;
-        for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-            hdr.rice_k[ch] = optimal_rice_k(sum_zz[ch], steady_cnt, max_k);
+            for (uint8_t n = 1U; n < num_frames; ++n) {
+                s_zz_buf[n][ch] = s_zz_cand[best_pred][n];
+            }
+            hdr.rice_k[ch] = (uint8_t)((best_pred << HT306_PRED_ORDER_SHIFT) | (best_k & HT306_RICE_K_MASK));
         }
 
         size_t avail_cap = packet_out_cap - hdr_sz - anc_sz;
@@ -270,8 +354,9 @@ HT306_CodecStatus_t ht306_lossless_encode_frame_flags(
         };
         for (uint8_t n = 1U; n < num_frames && !bw.overflow; ++n) {
             for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-                uint8_t base_k = hdr.rice_k[ch];
-                uint8_t k = (n < 3U && base_k <= 16U) ? (uint8_t)(base_k + 6U) : base_k;
+                uint8_t base_k = hdr.rice_k[ch] & HT306_RICE_K_MASK;
+                uint8_t pred_code = (hdr.rice_k[ch] & HT306_PRED_ORDER_MASK) >> HT306_PRED_ORDER_SHIFT;
+                uint8_t k = (pred_code == 0U && n < 3U && base_k <= 16U) ? (uint8_t)(base_k + 6U) : base_k;
                 uint32_t zz = s_zz_buf[n][ch];
                 uint32_t q = zz >> k;
 
@@ -302,18 +387,22 @@ HT306_CodecStatus_t ht306_lossless_encode_frame_flags(
         if ((hdr_sz + raw_payload_len) > packet_out_cap) {
             return HT306_CODEC_ERR_BUFFER_TOO_SMALL;
         }
-        hdr.flags = (uint8_t)(flags | HT306_FLAG_VERBATIM_RAW);
+        hdr.flags = (uint8_t)((flags & ~HT306_FLAG_SHIFT_MASK) |
+                              HT306_FLAG_ENCODE_SHIFT(shift_code) |
+                              HT306_FLAG_VERBATIM_RAW);
         memset(hdr.rice_k, 0, sizeof(hdr.rice_k));
 
         size_t off = 0U;
         for (uint8_t n = 0U; n < num_frames; ++n) {
             const int32_t *row = &pcm_in[(size_t)n * HT306_NUM_CHANNELS];
             for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-                uint32_t u = is_32bit ? (uint32_t)row[ch] : (uint32_t)sext24(row[ch]);
+                uint32_t u = is_32bit ? (uint32_t)row[ch] : (uint32_t)shift_sample_24(row[ch], shift_bits);
                 payload[off++] = (uint8_t)(u & 0xFFU);
                 payload[off++] = (uint8_t)((u >> 8U) & 0xFFU);
-                payload[off++] = (uint8_t)((u >> 16U) & 0xFFU);
-                if (is_32bit) {
+                if (bytes_per_verbatim >= 3U) {
+                    payload[off++] = (uint8_t)((u >> 16U) & 0xFFU);
+                }
+                if (bytes_per_verbatim == 4U) {
                     payload[off++] = (uint8_t)((u >> 24U) & 0xFFU);
                 }
             }
@@ -412,11 +501,18 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
     }
 
     const bool is_32bit = (hdr.flags & HT306_FLAG_BITDEPTH_32) != 0U;
+    if (is_32bit && (hdr.flags & HT306_FLAG_SHIFT_MASK) != 0U) {
+        return HT306_CODEC_ERR_CORRUPT_STREAM;
+    }
+
+    const uint8_t shift_code = (uint8_t)((hdr.flags & HT306_FLAG_SHIFT_MASK) >> HT306_FLAG_SHIFT_SHIFT);
+    const uint8_t shift_bits = (uint8_t)(shift_code * 2U);
     const bool is_verbatim = (hdr.flags & HT306_FLAG_VERBATIM_RAW) != 0U;
     const size_t bytes_per_sample = is_32bit ? 4U : 3U;
 
     if (is_verbatim) {
-        const size_t expected_payload = (size_t)hdr.num_frames * HT306_NUM_CHANNELS * bytes_per_sample;
+        const size_t bytes_per_verbatim = is_32bit ? 4U : ((shift_bits >= 8U && hdr.num_frames >= 2U) ? 2U : 3U);
+        const size_t expected_payload = (size_t)hdr.num_frames * HT306_NUM_CHANNELS * bytes_per_verbatim;
         if (payload_len != expected_payload) {
             return HT306_CODEC_ERR_CORRUPT_STREAM;
         }
@@ -433,12 +529,19 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
                                  | ((uint32_t)payload[off + 3U] << 24U);
                     off += 4U;
                     s = (int32_t)u32;
+                } else if (bytes_per_verbatim == 2U) {
+                    int16_t v16 = (int16_t)(uint16_t)((uint32_t)payload[off] | ((uint32_t)payload[off + 1U] << 8U));
+                    off += 2U;
+                    s = sext24((int32_t)((uint32_t)(int32_t)v16 << shift_bits));
                 } else {
                     uint32_t u24 = (uint32_t)payload[off]
                                  | ((uint32_t)payload[off + 1U] << 8U)
                                  | ((uint32_t)payload[off + 2U] << 16U);
                     off += 3U;
                     s = sext24((int32_t)u24);
+                    if (shift_bits > 0U) {
+                        s = sext24((int32_t)((uint32_t)s << shift_bits));
+                    }
                 }
 
                 if (pcm24_out) {
@@ -464,8 +567,15 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
         return HT306_CODEC_ERR_CORRUPT_STREAM;
     }
 
+    uint8_t base_k[HT306_NUM_CHANNELS];
+    uint8_t pred_code[HT306_NUM_CHANNELS];
     for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-        if (hdr.rice_k[ch] > max_k) {
+        if ((hdr.rice_k[ch] & 0x80U) != 0U) {
+            return HT306_CODEC_ERR_CORRUPT_STREAM;
+        }
+        base_k[ch] = hdr.rice_k[ch] & HT306_RICE_K_MASK;
+        pred_code[ch] = (hdr.rice_k[ch] & HT306_PRED_ORDER_MASK) >> HT306_PRED_ORDER_SHIFT;
+        if (base_k[ch] > max_k) {
             return HT306_CODEC_ERR_CORRUPT_STREAM;
         }
     }
@@ -486,11 +596,12 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
             s0 = sext24((int32_t)u24);
         }
         p1[ch] = p2[ch] = p3[ch] = p4[ch] = s0;
+        int32_t s_out = (!is_32bit && shift_bits > 0U) ? sext24((int32_t)((uint32_t)s0 << shift_bits)) : s0;
         if (pcm24_out) {
-            pcm24_out[ch] = is_32bit ? (int32_t)(s0 >> 8) : s0;
+            pcm24_out[ch] = is_32bit ? (int32_t)(s_out >> 8) : s_out;
         }
         if (i2s32_msb_out) {
-            i2s32_msb_out[ch] = is_32bit ? s0 : (int32_t)((uint32_t)s0 << 8U);
+            i2s32_msb_out[ch] = is_32bit ? s_out : (int32_t)((uint32_t)s_out << 8U);
         }
     }
 
@@ -506,14 +617,25 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
     for (uint8_t n = 1U; n < warmup_end; ++n) {
         size_t base = (size_t)n * HT306_NUM_CHANNELS;
         for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
-            uint8_t base_k = hdr.rice_k[ch];
-            uint8_t k = (n < 3U && base_k <= 16U) ? (uint8_t)(base_k + 6U) : base_k;
+            uint8_t k = (pred_code[ch] == 0U && n < 3U && base_k[ch] <= 16U)
+                      ? (uint8_t)(base_k[ch] + 6U)
+                      : base_k[ch];
             uint32_t zz = 0U;
             if (!decode_rice_sample(&br, k, escape_bits, &zz)) {
                 return HT306_CODEC_ERR_CORRUPT_STREAM;
             }
 
-            uint32_t upred = (uint32_t)predict_order4_32(n, p1[ch], p2[ch], p3[ch], p4[ch]);
+            uint32_t upred;
+            if (pred_code[ch] == 1U) {
+                upred = (uint32_t)p1[ch];
+            } else if (pred_code[ch] == 2U) {
+                upred = (n == 1U) ? (uint32_t)p1[ch] : ((2U * (uint32_t)p1[ch]) - (uint32_t)p2[ch]);
+            } else if (pred_code[ch] == 3U) {
+                upred = 0U;
+            } else {
+                upred = (uint32_t)predict_order4_32(n, p1[ch], p2[ch], p3[ch], p4[ch]);
+            }
+
             uint32_t sum = upred + (uint32_t)zz_dec(zz);
             int32_t s = is_32bit ? (int32_t)sum : sext24((int32_t)sum);
             p4[ch] = p3[ch];
@@ -521,11 +643,12 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
             p2[ch] = p1[ch];
             p1[ch] = s;
 
+            int32_t s_out = (!is_32bit && shift_bits > 0U) ? sext24((int32_t)((uint32_t)s << shift_bits)) : s;
             if (pcm24_out) {
-                pcm24_out[base + ch] = is_32bit ? (int32_t)(s >> 8) : s;
+                pcm24_out[base + ch] = is_32bit ? (int32_t)(s_out >> 8) : s_out;
             }
             if (i2s32_msb_out) {
-                i2s32_msb_out[base + ch] = is_32bit ? s : (int32_t)((uint32_t)s << 8U);
+                i2s32_msb_out[base + ch] = is_32bit ? s_out : (int32_t)((uint32_t)s_out << 8U);
             }
         }
     }
@@ -534,11 +657,21 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
         size_t base = (size_t)n * HT306_NUM_CHANNELS;
         for (uint8_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
             uint32_t zz = 0U;
-            if (!decode_rice_sample(&br, hdr.rice_k[ch], escape_bits, &zz)) {
+            if (!decode_rice_sample(&br, base_k[ch], escape_bits, &zz)) {
                 return HT306_CODEC_ERR_CORRUPT_STREAM;
             }
 
-            uint32_t upred = predict_order4_steady_u32(p1[ch], p2[ch], p3[ch], p4[ch]);
+            uint32_t upred;
+            if (pred_code[ch] == 1U) {
+                upred = (uint32_t)p1[ch];
+            } else if (pred_code[ch] == 2U) {
+                upred = (2U * (uint32_t)p1[ch]) - (uint32_t)p2[ch];
+            } else if (pred_code[ch] == 3U) {
+                upred = 0U;
+            } else {
+                upred = predict_order4_steady_u32(p1[ch], p2[ch], p3[ch], p4[ch]);
+            }
+
             uint32_t sum = upred + (uint32_t)zz_dec(zz);
             int32_t s = is_32bit ? (int32_t)sum : sext24((int32_t)sum);
             p4[ch] = p3[ch];
@@ -546,11 +679,12 @@ HT306_CodecStatus_t HT306_RAM_FUNC(ht306_lossless_decode_frame_ex)(
             p2[ch] = p1[ch];
             p1[ch] = s;
 
+            int32_t s_out = (!is_32bit && shift_bits > 0U) ? sext24((int32_t)((uint32_t)s << shift_bits)) : s;
             if (pcm24_out) {
-                pcm24_out[base + ch] = is_32bit ? (int32_t)(s >> 8) : s;
+                pcm24_out[base + ch] = is_32bit ? (int32_t)(s_out >> 8) : s_out;
             }
             if (i2s32_msb_out) {
-                i2s32_msb_out[base + ch] = is_32bit ? s : (int32_t)((uint32_t)s << 8U);
+                i2s32_msb_out[base + ch] = is_32bit ? s_out : (int32_t)((uint32_t)s_out << 8U);
             }
         }
     }

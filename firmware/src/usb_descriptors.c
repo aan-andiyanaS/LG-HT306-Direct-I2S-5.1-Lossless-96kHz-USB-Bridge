@@ -291,11 +291,13 @@ void HT306_USB_RAM_FUNC(ht306_usb_task)(void) {
     }
 
     bool read_any = false;
-    while (tud_vendor_available() > 0U && ht306_usb_packet_queue_free_slots() >= 2U) {
-        /* 64-byte chunk matches USB Full-Speed EP size; guarantees at most 1 full 48-frame
-         * silence packet (77 B) or 2 min_pkt_len (32 B) packets per read -> 0 drops with free_slots >= 2 */
-        uint8_t chunk[64];
-        uint32_t n = tud_vendor_read(chunk, sizeof(chunk));
+    uint32_t free_slots;
+    while (tud_vendor_available() > 0U && (free_slots = ht306_usb_packet_queue_free_slots()) >= 2U) {
+        /* Read up to 256 B when queue has >= 9 slots (reduces TinyUSB FIFO lock overhead 4x);
+         * fall back to 64 B when nearly full to preserve 0-drop guarantee */
+        uint8_t chunk[256];
+        uint32_t req = (free_slots >= 9U) ? (uint32_t)sizeof(chunk) : 64U;
+        uint32_t n = tud_vendor_read(chunk, req);
         if (n == 0U) {
             break;
         }

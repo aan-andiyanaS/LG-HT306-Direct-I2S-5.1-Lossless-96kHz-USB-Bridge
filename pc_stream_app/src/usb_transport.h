@@ -6,6 +6,7 @@
 #include <string>
 #include <mutex>
 #include <atomic>
+#include <vector>
 
 namespace ht306::usb {
 
@@ -38,6 +39,17 @@ public:
     void HandleSystemResume();
 
 private:
+    static constexpr size_t kAsyncTxSlots = 4;
+
+    struct AsyncTxSlot {
+        std::vector<uint8_t> buf;
+        OVERLAPPED ov{};
+        HANDLE event = NULL;
+        bool pending = false;
+        size_t expected_len = 0;
+    };
+
+    void CancelAndDrainAsyncTxLocked();
     void CloseWinUsbHandlesLocked();
     void CloseSerialLocked();
     bool ResetTransportState(const char* heartbeat_text);
@@ -64,6 +76,8 @@ private:
 
     // Concurrency and thread management
     std::recursive_mutex m_write_mutex;
+    AsyncTxSlot m_tx_slots[kAsyncTxSlots];
+    size_t m_tx_next_slot = 0;
     std::atomic<bool> m_is_open{false};
     std::atomic<bool> m_worker_running{false};
     std::atomic<bool> m_trigger_check{true};

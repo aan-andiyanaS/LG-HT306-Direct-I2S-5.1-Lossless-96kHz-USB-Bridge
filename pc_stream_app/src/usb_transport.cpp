@@ -46,7 +46,27 @@ bool ContainsRp2350VidPid(const char* hwid_upper) {
 
 } // namespace
 
+void UsbTransport::CancelAndDrainAsyncTxLocked() {
+    if (m_winusb_handle) {
+        WinUsb_AbortPipe(m_winusb_handle, m_bulk_out_pipe);
+    }
+    if (m_device_handle != INVALID_HANDLE_VALUE) {
+        CancelIoEx(m_device_handle, NULL);
+    }
+    for (auto& slot : m_tx_slots) {
+        if (slot.pending) {
+            if (slot.event) {
+                WaitForSingleObject(slot.event, 50);
+            }
+            slot.pending = false;
+            slot.expected_len = 0;
+        }
+    }
+    m_tx_next_slot = 0;
+}
+
 void UsbTransport::CloseWinUsbHandlesLocked() {
+    CancelAndDrainAsyncTxLocked();
     if (m_winusb_handle) {
         WinUsb_Free(m_winusb_handle);
         m_winusb_handle = NULL;
@@ -61,11 +81,21 @@ void UsbTransport::CloseWinUsbHandlesLocked() {
 UsbTransport::UsbTransport(AppState& state)
     : m_state(state) {
     m_stop_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    for (auto& slot : m_tx_slots) {
+        slot.buf.reserve(4096);
+        slot.event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    }
 }
 
 UsbTransport::~UsbTransport() {
     StopWorker();
     Close();
+    for (auto& slot : m_tx_slots) {
+        if (slot.event) {
+            CloseHandle(slot.event);
+            slot.event = NULL;
+        }
+    }
     if (m_stop_event) {
         CloseHandle(m_stop_event);
         m_stop_event = NULL;
@@ -615,8 +645,8 @@ bool UsbTransport::Open() {
             return false;
         }
 
-        // Set short pipe timeouts for low latency on bulk OUT endpoint
-        ULONG timeout_ms = 100;
+        // Set pipe timeout slightly above overlapped slot wait for bulk OUT endpoint
+        ULONG timeout_ms = 250;
         WinUsb_SetPipePolicy(m_winusb_handle, m_bulk_out_pipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeout_ms), &timeout_ms);
 
         m_consecutive_write_failures = 0;
@@ -657,23 +687,11 @@ bool UsbTransport::WritePacket(const uint8_t* data, size_t length) {
         std::lock_guard<std::recursive_mutex> lock(m_write_mutex);
         if (!m_winusb_handle) return false;
 
-        ULONG bytes_written = 0;
-        BOOL res = WinUsb_WritePipe(
-            m_winusb_handle,
-            m_bulk_out_pipe,
-            const_cast<PUCHAR>(data),
-            static_cast<ULONG>(length),
-            &bytes_written,
-            NULL
-        );
+        AsyncTxSlot& slot = m_tx_slots[m_tx_next_slot];
+        m_tx_next_slot = (m_tx_next_slot + 1u) % kAsyncTxSlots;
 
-        if (res) {
-            m_consecutive_write_failures = 0;
-            write_ok = (bytes_written == length);
-        } else {
-            DWORD err = GetLastError();
+        auto handle_write_err = [&](DWORD err) -> bool {
             m_consecutive_write_failures++;
-
             const bool is_fatal =
                 (err == ERROR_DEVICE_NOT_CONNECTED) ||
                 (err == ERROR_GEN_FAILURE) ||
@@ -683,18 +701,76 @@ bool UsbTransport::WritePacket(const uint8_t* data, size_t length) {
                 (err == ERROR_FILE_NOT_FOUND) ||
                 (m_consecutive_write_failures >= 5);
 
+            CancelAndDrainAsyncTxLocked();
             if (is_fatal) {
                 CloseWinUsbHandlesLocked();
                 m_is_open.store(false);
                 fatal_disconnect = true;
                 fatal_err = err;
-            } else if (m_winusb_handle) {
-                // Transient timeout/stall: reset pipe without tearing down device handle
+                return false;
+            }
+            if (m_winusb_handle) {
                 WinUsb_ResetPipe(m_winusb_handle, m_bulk_out_pipe);
+            }
+            return true;
+        };
+
+        if (slot.pending) {
+            DWORD wait_rc = slot.event ? WaitForSingleObject(slot.event, 150) : WAIT_FAILED;
+            if (wait_rc == WAIT_OBJECT_0) {
+                ULONG transferred = 0;
+                BOOL ov_ok = WinUsb_GetOverlappedResult(m_winusb_handle, &slot.ov, &transferred, FALSE);
+                DWORD ov_err = ov_ok ? ERROR_SUCCESS : GetLastError();
+                slot.pending = false;
+                if (!ov_ok || transferred != slot.expected_len) {
+                    if (!handle_write_err(ov_ok ? ERROR_WRITE_FAULT : ov_err)) {
+                        goto after_lock;
+                    }
+                }
+            } else {
+                DWORD err = (wait_rc == WAIT_TIMEOUT) ? ERROR_SEM_TIMEOUT : GetLastError();
+                if (!handle_write_err(err)) {
+                    goto after_lock;
+                }
+            }
+        }
+
+        slot.buf.assign(data, data + length);
+        if (slot.event) {
+            ResetEvent(slot.event);
+        }
+        std::memset(&slot.ov, 0, sizeof(slot.ov));
+        slot.ov.hEvent = slot.event;
+        slot.expected_len = length;
+
+        ULONG bytes_written = 0;
+        BOOL res = WinUsb_WritePipe(
+            m_winusb_handle,
+            m_bulk_out_pipe,
+            slot.buf.data(),
+            static_cast<ULONG>(length),
+            &bytes_written,
+            &slot.ov
+        );
+
+        if (res) {
+            m_consecutive_write_failures = 0;
+            slot.pending = false;
+            write_ok = (bytes_written == length);
+        } else {
+            DWORD err = GetLastError();
+            if (err == ERROR_IO_PENDING) {
+                slot.pending = true;
+                m_consecutive_write_failures = 0;
+                write_ok = true;
+            } else {
+                slot.pending = false;
+                (void)handle_write_err(err);
             }
         }
     }
 
+after_lock:
     if (fatal_disconnect) {
         ResetTransportState("USB link lost — reconnecting...");
         m_state.AddLog(LogLevel::LOG_WARN, "WinUSB",

@@ -80,6 +80,7 @@ static HT306_ClkDiv_t    g_clkdiv_44k1 = { 26U, 147U };
 static HT306_ClkDiv_t    g_clkdiv_48k  = { 24U, 106U };
 static HT306_ClkDiv_t    g_clkdiv_96k  = { 12U, 53U  };
 static HT306_ClkDiv_t    g_active_clkdiv = { 12U, 53U };
+static int8_t            g_pll_trim_state = 0; /* -1: lambat (+1 frac8), 0: nominal, +1: cepat (-1 frac8) */
 
 static int               g_dma_chan_a = -1;
 static int               g_dma_chan_b = -1;
@@ -179,8 +180,9 @@ size_t HT306_I2S_RAM_FUNC(ht306_i2s_write_frames_6ch)(
             const int32_t *f = &block_src[n * 6U];
             uint32_t *dst = &block_dst[n * HT306_I2S_WORDS_PER_FRAME];
 
-            /* Mapping 4-lane I2S: [0]=FL, [1]=FR, [2]=C, [3]=LFE, [4]=SL, [5]=SR */
-            ht306_interleave_4lanes_to_pio_words((uint32_t)f[0], (uint32_t)f[4], (uint32_t)f[2], 0U, &dst[0]);
+            /* Mapping 4-lane fisik HT306 ([0]=FL,[1]=FR,[2]=C,[3]=LFE,[4]=SL,[5]=SR):
+             * GP4(L)=SL, GP5(L)=FL, GP6(L)=C | GP4(R)=FR, GP5(R)=SR, GP6(R)=LFE */
+            ht306_interleave_4lanes_to_pio_words((uint32_t)f[4], (uint32_t)f[0], (uint32_t)f[2], 0U, &dst[0]);
             ht306_interleave_4lanes_to_pio_words((uint32_t)f[1], (uint32_t)f[5], (uint32_t)f[3], 0U, &dst[4]);
         }
 
@@ -239,10 +241,32 @@ static inline HT306_ClkDiv_t __not_in_flash_func(ht306_clkdiv_for_rate)(HT306_Sa
 }
 
 static void __not_in_flash_func(ht306_pll_adjust_symmetrical)(uint32_t queued_blocks) {
+    int8_t next_state = g_pll_trim_state;
+    if (g_pll_trim_state == 0) {
+        if (queued_blocks < 16U) {
+            next_state = -1;
+        } else if (queued_blocks > 48U) {
+            next_state = 1;
+        }
+    } else if (g_pll_trim_state < 0) {
+        if (queued_blocks >= 32U) {
+            next_state = 0;
+        }
+    } else {
+        if (queued_blocks <= 32U) {
+            next_state = 0;
+        }
+    }
+
+    if (next_state == g_pll_trim_state) {
+        return;
+    }
+
+    g_pll_trim_state = next_state;
     uint32_t d_int  = g_active_clkdiv.div_int;
     uint8_t  d_frac = g_active_clkdiv.div_frac8;
 
-    if (queued_blocks > 20U) {
+    if (next_state > 0) {
         /* Host sedikit lebih cepat (+ppm): percepat PIO -1 LSB frac8 (dengan borrow) */
         if (d_frac == 0U) {
             if (d_int > 1U) {
@@ -252,7 +276,7 @@ static void __not_in_flash_func(ht306_pll_adjust_symmetrical)(uint32_t queued_bl
         } else {
             d_frac = (uint8_t)(d_frac - 1U);
         }
-    } else if (queued_blocks < 10U) {
+    } else if (next_state < 0) {
         /* Host sedikit lebih lambat (-ppm): perlambat PIO +1 LSB frac8 (dengan carry) */
         if (d_frac == 255U) {
             d_int += 1U;
@@ -261,7 +285,6 @@ static void __not_in_flash_func(ht306_pll_adjust_symmetrical)(uint32_t queued_bl
             d_frac = (uint8_t)(d_frac + 1U);
         }
     }
-    /* Jika 10 <= queued_blocks <= 20: kembalikan ke (div_int, div_frac8) nominal */
 
     pio_sm_set_clkdiv_int_frac8(g_pio_instance, g_pio_sm, d_int, d_frac);
 }
@@ -284,7 +307,7 @@ static bool __not_in_flash_func(ht306_build_fade_out_ramp_block)(void) {
             s[ch] = (uint32_t)faded;
         }
         uint32_t *dst = &g_ramp_block[n * HT306_I2S_WORDS_PER_FRAME];
-        ht306_interleave_4lanes_to_pio_words(s[0], s[4], s[2], 0U, &dst[0]);
+        ht306_interleave_4lanes_to_pio_words(s[4], s[0], s[2], 0U, &dst[0]);
         ht306_interleave_4lanes_to_pio_words(s[1], s[5], s[3], 0U, &dst[4]);
     }
 
@@ -322,6 +345,7 @@ static void __not_in_flash_func(ht306_dma_reload_channel)(int chan_idx, uint dma
             g_active_clkdiv = ht306_clkdiv_for_rate(target);
             pio_sm_set_clkdiv_int_frac8(g_pio_instance, g_pio_sm,
                                         g_active_clkdiv.div_int, g_active_clkdiv.div_frac8);
+            g_pll_trim_state = 0;
             g_active_rate = (uint32_t)target;
             g_play_state = HT306_PLAY_IDLE;
         }
@@ -382,8 +406,11 @@ static void __not_in_flash_func(ht306_dma_reload_channel)(int chan_idx, uint dma
         } else {
             /* Underrun: reset PLL ke nominal + kirim soft-ramp fade-out 48 frame bila non-zero */
             g_stat_underrun_count = g_stat_underrun_count + 1U;
-            pio_sm_set_clkdiv_int_frac8(g_pio_instance, g_pio_sm,
-                                        g_active_clkdiv.div_int, g_active_clkdiv.div_frac8);
+            if (g_pll_trim_state != 0) {
+                g_pll_trim_state = 0;
+                pio_sm_set_clkdiv_int_frac8(g_pio_instance, g_pio_sm,
+                                            g_active_clkdiv.div_int, g_active_clkdiv.div_frac8);
+            }
             if (!ramp_in_flight && ht306_build_fade_out_ramp_block()) {
                 src = g_ramp_block;
                 holds_ramp = true;
@@ -522,6 +549,7 @@ bool ht306_i2s_engine_init(HT306_SampleRate_t initial_rate) {
     g_play_state = HT306_PLAY_IDLE;
     g_rate_silence_remaining = 0U;
     g_pending_switch_rate = (uint32_t)initial_rate;
+    g_pll_trim_state = 0;
 
     /* 1. Muat program assembly PIO `i2s_multi_4lane` ke memori instruksi PIO0 */
     if (!g_pio_program_loaded) {
@@ -538,11 +566,11 @@ bool ht306_i2s_engine_init(HT306_SampleRate_t initial_rate) {
     }
 
     /* 2. Inisialisasi GPIO GP2..GP7 pada Waveshare RP2350-Zero */
-    for (uint pin = HT306_PIN_I2S_BCK; pin <= HT306_PIN_I2S_ADATA3; ++pin) {
+    for (uint pin = HT306_PIN_I2S_LRCK; pin <= HT306_PIN_I2S_ADATA3; ++pin) {
         pio_gpio_init(g_pio_instance, pin);
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_4MA);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_8MA);
     }
-    pio_sm_set_consecutive_pindirs(g_pio_instance, g_pio_sm, HT306_PIN_I2S_BCK, 6U, true);
+    pio_sm_set_consecutive_pindirs(g_pio_instance, g_pio_sm, HT306_PIN_I2S_LRCK, 6U, true);
 
     /* 3. Prekomputasi divider 16.8 exact untuk 44.1 / 48 / 96 kHz dari clock_get_hz(clk_sys) */
     uint32_t sys_hz = clock_get_hz(clk_sys);
@@ -551,9 +579,9 @@ bool ht306_i2s_engine_init(HT306_SampleRate_t initial_rate) {
     g_clkdiv_96k  = ht306_compute_clkdiv_16_8(sys_hz, HT306_SAMPLE_RATE_96000);
     g_active_clkdiv = ht306_clkdiv_for_rate(initial_rate);
 
-    /* 4. Konfigurasi State Machine PIO0 (Side-set: GP2/GP3, OUT: GP4..GP7, Autopull 32-bit) */
+    /* 4. Konfigurasi State Machine PIO0 (Side-set: GP2=LRCK / GP3=BCK, OUT: GP4..GP7, Autopull 32-bit) */
     pio_sm_config sm_cfg = i2s_multi_4lane_program_get_default_config(g_pio_offset);
-    sm_config_set_sideset_pins(&sm_cfg, HT306_PIN_I2S_BCK);
+    sm_config_set_sideset_pins(&sm_cfg, HT306_PIN_I2S_LRCK);
     sm_config_set_out_pins(&sm_cfg, HT306_PIN_I2S_ADATA0, 4U);
     sm_config_set_out_shift(&sm_cfg, true, true, 32U); /* Shift Right, Autopull threshold = 32 */
     sm_config_set_fifo_join(&sm_cfg, PIO_FIFO_JOIN_TX); /* Gabungkan FIFO RX+TX menjadi 8-word TX FIFO */

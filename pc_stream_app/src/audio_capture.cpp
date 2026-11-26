@@ -422,8 +422,8 @@ void AudioCapture::EmitProcessedFrames6Ch(
         return;
     }
 
-    static constexpr uint32_t kUsbBatchMaxSubframes = 4u;
-    static constexpr size_t kUsbBatchMaxBytes = 3584u;
+    static constexpr uint32_t kUsbBatchMaxSubframes = 10u;
+    static constexpr size_t kUsbBatchMaxBytes = 4096u;
 
     float ch_max[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool ch_clipped[6] = { false, false, false, false, false, false };
@@ -553,12 +553,36 @@ void AudioCapture::EmitProcessedFrames6Ch(
             HT306_CodecStatus_t st = ht306_lossless_encode_frame_flags(
                 pcm6ch_block.data(),
                 48,
-                m_seq++,
+                m_seq,
                 enc_flags,
                 usb_packet.data(),
                 HT306_MAX_PACKET_BYTES,
                 &enc_len
             );
+
+            // Unified safe USB 1.1 TT ceiling (~680 KiB/s): <= 348 B @ 96 kHz, <= 696 B @ 48 kHz
+            const size_t max_safe_pkt_bytes = (output_rate >= 88200u) ? 348u : 696u;
+            if (st == HT306_CODEC_OK && enc_len > max_safe_pkt_bytes) {
+                static constexpr uint8_t kShiftFallback[] = { 1u, 2u, 3u, 4u, 5u, 6u, 7u };
+                for (uint8_t sc : kShiftFallback) {
+                    size_t retry_len = 0;
+                    uint8_t retry_flags = static_cast<uint8_t>(enc_flags | HT306_FLAG_ENCODE_SHIFT(sc));
+                    if (ht306_lossless_encode_frame_flags(
+                            pcm6ch_block.data(),
+                            48,
+                            m_seq,
+                            retry_flags,
+                            usb_packet.data(),
+                            HT306_MAX_PACKET_BYTES,
+                            &retry_len) == HT306_CODEC_OK) {
+                        enc_len = retry_len;
+                        if (enc_len <= max_safe_pkt_bytes) {
+                            break;
+                        }
+                    }
+                }
+            }
+            m_seq++;
 
             if (st == HT306_CODEC_OK && enc_len > 0 && enc_len <= HT306_MAX_PACKET_BYTES) {
                 if (!usb_batch.empty() &&
@@ -671,7 +695,7 @@ void AudioCapture::CaptureLoop() {
     std::vector<int32_t> pcm6ch_block(48 * 6, 0);
     std::vector<uint8_t> usb_packet(HT306_MAX_PACKET_BYTES, 0);
     std::vector<uint8_t> usb_batch;
-    usb_batch.reserve(3584);
+    usb_batch.reserve(4096);
     uint32_t usb_batch_packets = 0;
     int frame_in_block = 0;
     ULONGLONG last_meter_update_tick = GetTickCount64();
@@ -1010,7 +1034,7 @@ void AudioCapture::CaptureLoop() {
                     last_meter_update_tick = now_tick;
                     m_state.DecayMeters();
                 }
-                if (WaitStopMs(2)) {
+                if (WaitStopMs(1)) {
                     break;
                 }
                 continue;

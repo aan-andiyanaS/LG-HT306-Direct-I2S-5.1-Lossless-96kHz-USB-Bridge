@@ -20,7 +20,7 @@
 /**
  * Antrian Paket 96 kHz Lossless Wait-Free SPSC antara Core 0 (USB) dan Core 1 (Unpacker).
  */
-#define HT306_PACKET_QUEUE_DEPTH  32U
+#define HT306_PACKET_QUEUE_DEPTH  64U
 #define HT306_PACKET_QUEUE_MASK   (HT306_PACKET_QUEUE_DEPTH - 1U)
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
@@ -281,8 +281,8 @@ int main(void) {
                 ht306_usb_log("[BOOT] Sistem Siap! Core 0 & Core 1 Berjalan.\r\n");
                 if (i2s_ok) {
                     ht306_usb_log("[INIT] PIO0 4-Lane I2S Engine: BERHASIL (48/96 kHz Auto-Switch Ready)\r\n");
-                    ht306_usb_log("       -> GP2: BCK  (Bit Clock)\r\n");
-                    ht306_usb_log("       -> GP3: LRCK (Word Select)\r\n");
+                    ht306_usb_log("       -> GP2: LRCK (Word Select)\r\n");
+                    ht306_usb_log("       -> GP3: BCK  (Bit Clock)\r\n");
                     ht306_usb_log("       -> GP4: ADATA0 (Front L/R)\r\n");
                     ht306_usb_log("       -> GP5: ADATA1 (Surround L/R)\r\n");
                     ht306_usb_log("       -> GP6: ADATA2 (Center / Subwoofer)\r\n");
@@ -349,7 +349,7 @@ int main(void) {
                     ht306_i2s_get_stats(&stats);
 
                     ht306_usb_log_printf(
-                        "[VU 5.1] FL:[%s] FR:[%s] C:[%s] LFE:[%s] SL:[%s] SR:[%s] | Rate: %s | Pkts: %lu\r\n",
+                        "[VU 5.1] FL:[%s] FR:[%s] C:[%s] LFE:[%s] SL:[%s] SR:[%s] | Rate: %s | Pkts: %lu | U:%lu O:%lu Q:%lu\r\n",
                         ht306_vu_meter_bar(peaks[0]),
                         ht306_vu_meter_bar(peaks[1]),
                         ht306_vu_meter_bar(peaks[2]),
@@ -357,7 +357,10 @@ int main(void) {
                         ht306_vu_meter_bar(peaks[4]),
                         ht306_vu_meter_bar(peaks[5]),
                         ht306_sample_rate_label(stats.current_sample_rate),
-                        (unsigned long)current_pkt
+                        (unsigned long)current_pkt,
+                        (unsigned long)stats.underrun_count,
+                        (unsigned long)stats.overrun_count,
+                        (unsigned long)(stats.buffered_frames / HT306_DMA_BLOCK_FRAMES)
                     );
                 }
                 last_heartbeat_ms = now_ms;

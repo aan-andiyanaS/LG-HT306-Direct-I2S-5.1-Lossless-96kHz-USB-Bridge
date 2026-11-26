@@ -440,8 +440,8 @@ def main():
     for line_no, line in enumerate(pio_src.splitlines(), 1):
         stripped = line.split(";")[0].strip()
         if stripped.startswith("out pins, 4"):
-            assert "side 0b00" in stripped or "side 0b10" in stripped, (
-                f"Baris {line_no}: `out pins, 4` harus pada falling edge BCK (0b00/0b10)!"
+            assert "side 0b00" in stripped or "side 0b01" in stripped, (
+                f"Baris {line_no}: `out pins, 4` harus pada falling edge BCK (0b00/0b01)!"
             )
     print("  -> Semua 32 bit Kiri & 32 bit Kanan di-output tepat pada FALLING edge BCK [OK]")
     print("  -> Total Siklus per Frame Stereo = 128 siklus PIO (64 BCK @ 50% duty cycle) [OK]")

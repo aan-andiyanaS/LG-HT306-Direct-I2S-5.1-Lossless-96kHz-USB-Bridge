@@ -4245,20 +4245,24 @@
       }
     }
 
-    // 16. Logs stream handling
+    // 16. Logs stream handling (only re-render terminal DOM when Log tab is visible)
     if (Array.isArray(data.logs)) {
       const nextLen = data.logs.length;
       const lastNext = nextLen > 0 ? String(data.logs[nextLen - 1]) : "";
       const lastCur = window.logBuffer.length > 0 ? String(window.logBuffer[window.logBuffer.length - 1]) : "";
       if (nextLen !== window.logBuffer.length || lastNext !== lastCur) {
         window.logBuffer = data.logs.map(l => typeof l === "string" ? l : (l.message || JSON.stringify(l)));
-        if (typeof window.renderLogs === "function") window.renderLogs();
+        if (window.currentTab === "log" && typeof window.renderLogs === "function") {
+          window.renderLogs();
+        }
       }
     } else if (data.log) {
       const line = typeof data.log === "string" ? data.log : (data.log.message || JSON.stringify(data.log));
       window.logBuffer.push(line);
       if (window.logBuffer.length > 500) window.logBuffer.shift();
-      if (typeof window.renderLogs === "function") window.renderLogs();
+      if (window.currentTab === "log" && typeof window.renderLogs === "function") {
+        window.renderLogs();
+      }
     }
 
     // 17. Audio Driver & Windows Taskbar Status sync (dirty-checked to prevent innerHTML thrashing)
@@ -5411,8 +5415,12 @@
 
     window.sendNativeCommand("tab_switched", { tab: tabName });
 
-    if (tabName === "log" && !window.isNativeWebView2) {
-      fetchLogs();
+    if (tabName === "log") {
+      if (window.isNativeWebView2) {
+        renderLogs();
+      } else {
+        fetchLogs();
+      }
     }
   };
 

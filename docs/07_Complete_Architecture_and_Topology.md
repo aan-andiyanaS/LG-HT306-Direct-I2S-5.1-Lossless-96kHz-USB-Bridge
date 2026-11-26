@@ -35,7 +35,7 @@ flowchart TB
         REASM["Core 0: ht306_usb_task()\n64-Byte Stream Reassembler\n& LED/VU Heartbeat"]
         Q1["SPSC Queue 1\ng_packet_queue[32]\n__dmb() Lock-Free"]
         UNPK["Core 1: ht306_core1_lossless_worker()\nLossless Decode < 0.03 ms\n+ 4-Lane Nibble Interleaver"]
-        Q2["SPSC Ring Buffer 2\ng_pio_ring_buffer[16 blocks]\n48 frames/block (32B/frame)"]
+        Q2["SPSC Ring Buffer 2\ng_pio_ring_buffer[32 blocks]\n48 frames/block (16 ms @ 96k)"]
         DMA["Chained Ping-Pong DMA (A <-> B)\ng_silence_block Fallback on Underrun\nPLL Drift Tracking +/-0.02%"]
         PIO["PIO0_SM0 (i2s_multi.pio)\nOutput Falling-Edge BCK\nGP2..GP6 (4mA Drive Strength)"]
 
@@ -63,7 +63,7 @@ flowchart TB
 
     USBTX ==>|"USB Type-C (WinUSB Bulk)"| TUSB
     USBTX -.->|"CDC ACM Serial"| TUSB
-    PIO ==>|"GP2..GP6 (BCK, LRCK, ADATA0..2)"| PROT ==>|"Via 33-Ohm Series Resistors"| INJ
+    PIO ==>|"GP2..GP6 (LRCK, BCK, ADATA0..2)"| PROT ==>|"Via 33-Ohm Series Resistors"| INJ
 ```
 
 ---
@@ -99,8 +99,8 @@ flowchart LR
     end
 
     subgraph RP["RP2350-Zero Injection (+ Buffer/33R)"]
-        G2["GP2 (BCK) -> 33R"]
-        G3["GP3 (LRCK) -> 33R"]
+        G2["GP2 (LRCK) -> 33R"]
+        G3["GP3 (BCK) -> 33R"]
         G4["GP4 (ADATA0 FL/FR) -> 33R"]
         G5["GP5 (ADATA1 SL/SR) -> 33R"]
         G6["GP6 (ADATA2 C/LFE) -> 33R"]
@@ -139,8 +139,8 @@ flowchart LR
     T_D1 -.-x|"Physical Cut"| PS7
     T_D2 -.-x|"Physical Cut"| PS8
 
-    G2 ==>|"Pad B"| PS4
-    G3 ==>|"Pad B"| PS5
+    G2 ==>|"Pad B"| PS5
+    G3 ==>|"Pad B"| PS4
     G4 ==>|"Pad B"| PS6
     G5 ==>|"Pad B"| PS7
     G6 ==>|"Pad B"| PS8
@@ -225,8 +225,8 @@ stateDiagram-v2
 
 | Line / Signal | Pin `RP2350-Zero` | Series Resistor | Original Component on PCB `EAX63554302` (Lifted) | Upstream Test Point (`Pad A`) | Target on `IC602 (PS9850)` (`Pad B`) |
 | :--- | :---: | :---: | :--- | :---: | :--- |
-| **`I2S_BCK`** | `GP2` | `33 Ω` series | **`R648`** (`47 Ω`) | `TP609` | **Pin 4** (`SBCK`) |
-| **`I2S_LRCK`** | `GP3` | `33 Ω` series | **`R647`** (`47 Ω`) | `TP608` | **Pin 5** (`SLRCK`) |
+| **`I2S_LRCK`** | `GP2` | `33 Ω` series | **`R647`** (`47 Ω`) | `TP608` | **Pin 5** (`SLRCK`) |
+| **`I2S_BCK`** | `GP3` | `33 Ω` series | **`R648`** (`47 Ω`) | `TP609` | **Pin 4** (`SBCK`) |
 | **`I2S_ADATA0`** (`FL/FR`) | `GP4` | `33 Ω` series | **`R631`** (`100 Ω`) | `TP610` | **Pin 6** (`SSDIN0`) |
 | **`I2S_ADATA1`** (`SL/SR`) | `GP5` | `33 Ω` series | **`R632`** (`100 Ω`) | `TP611` | **Pin 7** (`SSDIN1`) |
 | **`I2S_ADATA2`** (`C/LFE`) | `GP6` | `33 Ω` series | **`R633`** (`100 Ω`) | `TP612` | **Pin 8** (`SSDIN2`) |

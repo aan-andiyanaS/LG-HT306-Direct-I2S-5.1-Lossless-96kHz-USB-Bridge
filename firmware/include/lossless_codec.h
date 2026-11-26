@@ -42,8 +42,15 @@ typedef enum {
 #define HT306_FLAG_CHANNELS_8         (1U << 2)
 #define HT306_FLAG_BITDEPTH_32        (1U << 3)  /* Mode 32-bit Studio Master */
 #define HT306_FLAG_VERBATIM_RAW       (1U << 4)  /* Mode payload PCM mentah anti-overflow */
+#define HT306_FLAG_SHIFT_SHIFT        5U         /* Bit 5..7: wasted-bits / dynamic right-shift code (shift_bits = code * 2) */
+#define HT306_FLAG_SHIFT_MASK         (0x07U << HT306_FLAG_SHIFT_SHIFT)
+#define HT306_FLAG_ENCODE_SHIFT(code) ((uint8_t)(((uint8_t)(code) & 0x07U) << HT306_FLAG_SHIFT_SHIFT))
+#define HT306_RICE_K_MASK             0x1FU      /* Bit 0..4 dari rice_k[ch] */
+#define HT306_PRED_ORDER_SHIFT        5U         /* Bit 5..6 dari rice_k[ch]: 0=O4, 1=O1, 2=O2, 3=O0 */
+#define HT306_PRED_ORDER_MASK         (0x03U << HT306_PRED_ORDER_SHIFT)
 #define HT306_FLAG_SUPPORTED_MASK     (HT306_FLAG_RATE_96KHZ | HT306_FLAG_BITDEPTH_24 | \
-                                       HT306_FLAG_BITDEPTH_32 | HT306_FLAG_VERBATIM_RAW)
+                                       HT306_FLAG_BITDEPTH_32 | HT306_FLAG_VERBATIM_RAW | \
+                                       HT306_FLAG_SHIFT_MASK)
 
 /**
  * Struktur Header Paket USB Lossless (14 Byte)

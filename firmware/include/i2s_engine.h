@@ -12,8 +12,8 @@ extern "C" {
 /**
  * Definisi Pin GPIO Waveshare RP2350-Zero untuk Jalur I2S ke IC602 (Pulsus PS9850)
  */
-#define HT306_PIN_I2S_BCK         2U   /* GP2: Side-set bit 0 */
-#define HT306_PIN_I2S_LRCK        3U   /* GP3: Side-set bit 1 */
+#define HT306_PIN_I2S_LRCK        2U   /* GP2: Side-set bit 0 */
+#define HT306_PIN_I2S_BCK         3U   /* GP3: Side-set bit 1 */
 #define HT306_PIN_I2S_ADATA0      4U   /* GP4: Front Left & Front Right */
 #define HT306_PIN_I2S_ADATA1      5U   /* GP5: Surround Left & Surround Right */
 #define HT306_PIN_I2S_ADATA2      6U   /* GP6: Center & Subwoofer (LFE) */
@@ -28,9 +28,9 @@ extern "C" {
  */
 #define HT306_I2S_WORDS_PER_FRAME      8U
 #define HT306_DMA_BLOCK_FRAMES         48U   /* 0.5 ms pada 96 kHz, 1.0 ms pada 48 kHz */
-#define HT306_RING_BUFFER_BLOCKS       32U   /* Power-of-2: 32 blok (16 ms @ 96 kHz / 32 ms @ 48 kHz) */
+#define HT306_RING_BUFFER_BLOCKS       64U   /* Power-of-2: 64 blok (32 ms @ 96 kHz / 64 ms @ 48 kHz) */
 #define HT306_RING_BUFFER_MASK         (HT306_RING_BUFFER_BLOCKS - 1U)
-#define HT306_PREFILL_WATERMARK_BLOCKS 6U    /* Pre-fill 6 blok (3 ms @ 96 kHz) sebelum mulai audio */
+#define HT306_PREFILL_WATERMARK_BLOCKS 32U   /* Pre-fill 32 blok (tengah ring 64: 16 ms @ 96 kHz / 32 ms @ 48 kHz) */
 
 /**
  * Mode Frekuensi Sampling I2S

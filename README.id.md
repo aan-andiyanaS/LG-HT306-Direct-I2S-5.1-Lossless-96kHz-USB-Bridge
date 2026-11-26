@@ -74,8 +74,8 @@ flowchart TB
 
 | Pin `RP2350-Zero` | Sinyal | Kanal Audio | Titik Sambung di Mainboard LG HT306 (`IC602`) |
 | :---: | :--- | :--- | :--- |
-| **`GP2`** | `I2S_BCK` | Bit Clock (`64 × Fs`) | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `BCK` (arah `IC602`) |
-| **`GP3`** | `I2S_LRCK` | Word Select (`Fs`) | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `LRCK` (arah `IC602`) |
+| **`GP2`** | `I2S_LRCK` | Word Select (`Fs`) | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `LRCK` (arah `IC602`) |
+| **`GP3`** | `I2S_BCK` | Bit Clock (`64 × Fs`) | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `BCK` (arah `IC602`) |
 | **`GP4`** | `I2S_ADATA0` | **Front L & Front R** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA0` (arah `IC602`) |
 | **`GP5`** | `I2S_ADATA1` | **Surround L & Surround R** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA1` (arah `IC602`) |
 | **`GP6`** | `I2S_ADATA2` | **Center & Subwoofer (LFE)** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA2` (arah `IC602`) |

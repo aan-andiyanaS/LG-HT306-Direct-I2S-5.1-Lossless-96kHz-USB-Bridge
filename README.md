@@ -74,8 +74,8 @@ flowchart TB
 
 | Pin `RP2350-Zero` | Signal | Audio Channel | Connection on LG HT306 Mainboard (`IC602`) |
 | :---: | :--- | :--- | :--- |
-| **`GP2`** | `I2S_BCK` | Bit Clock (`64 × Fs`) | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `BCK` resistor (towards `IC602`) |
-| **`GP3`** | `I2S_LRCK` | Word Select (`Fs`) | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `LRCK` resistor (towards `IC602`) |
+| **`GP2`** | `I2S_LRCK` | Word Select (`Fs`) | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `LRCK` resistor (towards `IC602`) |
+| **`GP3`** | `I2S_BCK` | Bit Clock (`64 × Fs`) | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `BCK` resistor (towards `IC602`) |
 | **`GP4`** | `I2S_ADATA0` | **Front L & Front R** | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA0` resistor (towards `IC602`) |
 | **`GP5`** | `I2S_ADATA1` | **Surround L & Surround R** | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA1` resistor (towards `IC602`) |
 | **`GP6`** | `I2S_ADATA2` | **Center & Subwoofer (LFE)**| Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA2` resistor (towards `IC602`) |

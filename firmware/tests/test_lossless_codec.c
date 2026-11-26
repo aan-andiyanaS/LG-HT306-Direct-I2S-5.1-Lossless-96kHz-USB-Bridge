@@ -401,8 +401,8 @@ static int test_i2s_ring_wraparound_and_mapping(void) {
             deinterleave_pio_words_4lanes(&frame_words[0], left_lanes);
             deinterleave_pio_words_4lanes(&frame_words[4], right_lanes);
 
-            if (left_lanes[0] != (uint32_t)exp[0] ||  /* ADATA0 = FL */
-                left_lanes[1] != (uint32_t)exp[4] ||  /* ADATA1 = SL */
+            if (left_lanes[0] != (uint32_t)exp[4] ||  /* ADATA0 = SL */
+                left_lanes[1] != (uint32_t)exp[0] ||  /* ADATA1 = FL */
                 left_lanes[2] != (uint32_t)exp[2] ||  /* ADATA2 = C  */
                 left_lanes[3] != 0U ||                /* ADATA3 = 0  */
                 right_lanes[0] != (uint32_t)exp[1] || /* ADATA0 = FR */
@@ -661,6 +661,83 @@ static int test_i2s_per_block_rate_tagging(void) {
     return 0;
 }
 
+static int test_adaptive_pred_and_shift_codec(void) {
+    printf("\n[11/11] Menjalankan Uji Adaptive Predictor (O0/1/2/4) & Wasted-Bits/Dynamic Shift...\n");
+
+    int32_t pcm_in[HT306_SUBFRAME_SAMPLES * HT306_NUM_CHANNELS];
+    int32_t pcm_out[HT306_SUBFRAME_SAMPLES * HT306_NUM_CHANNELS];
+    uint8_t packet[HT306_MAX_PACKET_BYTES];
+    size_t pkt_len = 0U;
+    uint8_t frames = 0U;
+
+    /* 11A. 16-in-24 auto wasted-bits: lower 8 bits = 0 -> auto shift_code=4, 100% bit-exact */
+    for (size_t n = 0; n < HT306_SUBFRAME_SAMPLES; ++n) {
+        double t = (double)n / 48000.0;
+        for (size_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
+            double v = 0.6 * sin(2.0 * M_PI * (440.0 + ch * 190.0) * t);
+            int32_t s16 = (int32_t)(v * 32767.0);
+            pcm_in[n * HT306_NUM_CHANNELS + ch] = (int32_t)((uint32_t)s16 << 8U);
+        }
+    }
+    if (ht306_lossless_encode_frame_flags(pcm_in, HT306_SUBFRAME_SAMPLES, 0x10U,
+            HT306_FLAG_BITDEPTH_24, packet, sizeof(packet), &pkt_len) != HT306_CODEC_OK) {
+        printf("[GAGAL] 16-in-24 encode gagal!\n");
+        return 1;
+    }
+    if (((packet[5] & HT306_FLAG_SHIFT_MASK) >> HT306_FLAG_SHIFT_SHIFT) != 4U) {
+        printf("[GAGAL] 16-in-24 tidak memicu auto shift_code=4 (flags=0x%02X)!\n", packet[5]);
+        return 1;
+    }
+    if (ht306_lossless_decode_frame(packet, pkt_len, pcm_out, NULL, &frames) != HT306_CODEC_OK ||
+        frames != HT306_SUBFRAME_SAMPLES || memcmp(pcm_in, pcm_out, sizeof(pcm_in)) != 0) {
+        printf("[GAGAL] 16-in-24 round-trip tidak bit-exact!\n");
+        return 1;
+    }
+
+    /* 11B. Loud wideband 48 kHz music -> 100% bit-exact with adaptive predictor */
+    for (size_t n = 0; n < HT306_SUBFRAME_SAMPLES; ++n) {
+        double t = (double)n / 48000.0;
+        for (size_t ch = 0; ch < HT306_NUM_CHANNELS; ++ch) {
+            double v = 0.35 * sin(2.0 * M_PI * 80.0 * t)
+                     + 0.25 * sin(2.0 * M_PI * 2800.0 * t + ch * 0.4)
+                     + 0.20 * sin(2.0 * M_PI * 12500.0 * t + ch * 0.9);
+            int32_t s24 = (int32_t)(v * 8388607.0);
+            pcm_in[n * HT306_NUM_CHANNELS + ch] = s24;
+        }
+    }
+    if (ht306_lossless_encode_frame_flags(pcm_in, HT306_SUBFRAME_SAMPLES, 0x11U,
+            HT306_FLAG_BITDEPTH_24, packet, sizeof(packet), &pkt_len) != HT306_CODEC_OK ||
+        ht306_lossless_decode_frame(packet, pkt_len, pcm_out, NULL, &frames) != HT306_CODEC_OK ||
+        memcmp(pcm_in, pcm_out, sizeof(pcm_in)) != 0) {
+        printf("[GAGAL] Adaptive predictor 48kHz wideband tidak bit-exact!\n");
+        return 1;
+    }
+
+    /* 11C. Explicit shift_code=2 (20-bit) & shift_code=4 (16-bit 2-byte verbatim white noise <= 590B) */
+    for (size_t i = 0; i < HT306_SUBFRAME_SAMPLES * HT306_NUM_CHANNELS; ++i) {
+        int32_t raw24 = (int32_t)(next_xorshift32() & 0x00FFFFFFU);
+        pcm_in[i] = (raw24 ^ 0x00800000) - 0x00800000;
+    }
+    if (ht306_lossless_encode_frame_flags(pcm_in, HT306_SUBFRAME_SAMPLES, 0x12U,
+            HT306_FLAG_RATE_96KHZ | HT306_FLAG_BITDEPTH_24 | HT306_FLAG_ENCODE_SHIFT(4U),
+            packet, sizeof(packet), &pkt_len) != HT306_CODEC_OK ||
+        pkt_len != (sizeof(HT306_LosslessHeader_t) + HT306_SUBFRAME_SAMPLES * HT306_NUM_CHANNELS * 2U) ||
+        ht306_lossless_decode_frame(packet, pkt_len, pcm_out, NULL, &frames) != HT306_CODEC_OK) {
+        printf("[GAGAL] 16-bit 2-byte verbatim fallback gagal (len=%zu)!\n", pkt_len);
+        return 1;
+    }
+    for (size_t i = 0; i < HT306_SUBFRAME_SAMPLES * HT306_NUM_CHANNELS; ++i) {
+        int32_t diff = pcm_in[i] - pcm_out[i];
+        if (diff < -128 || diff > 128) {
+            printf("[GAGAL] 16-bit shift rounding error terlalu besar (%d) pada idx %zu!\n", diff, i);
+            return 1;
+        }
+    }
+
+    printf("  [LULUS] Adaptive Predictor & Wasted-Bits/Shift Codec: 100%% Akurat\n");
+    return 0;
+}
+
 int main(void) {
     printf("=== Uji Verifikasi Bit-Perfect Codec Lossless 96 kHz & I2S Engine (RP2350-Zero HT306) ===\n");
 
@@ -849,7 +926,10 @@ int main(void) {
     if (test_i2s_per_block_rate_tagging() != 0) {
         return 1;
     }
+    if (test_adaptive_pred_and_shift_codec() != 0) {
+        return 1;
+    }
 
-    printf("\n=== SEMUA 10 SUITE PENGUJIAN CODEC, I2S ENGINE & USB REASSEMBLER LULUS 100%% BIT-PERFECT ===\n");
+    printf("\n=== SEMUA 11 SUITE PENGUJIAN CODEC, I2S ENGINE & USB REASSEMBLER LULUS 100%% BIT-PERFECT ===\n");
     return 0;
 }

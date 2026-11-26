@@ -18,7 +18,7 @@ Di dalam [`i2s_multi.pio`](../firmware/src/i2s_multi.pio), satu *State Machine* 
 sequenceDiagram
     participant DMA as DMA Ping-Pong (SRAM)
     participant OSR as PIO0 OSR (Autopull 32-bit)
-    participant BCK as GP2 (BCK) & GP3 (LRCK)
+    participant BCK as GP2 (LRCK) & GP3 (BCK)
     participant DATA as GP4..GP7 (ADATA0..3)
     participant PS as IC602 (Pulsus PS9850)
 
@@ -27,12 +27,12 @@ sequenceDiagram
     loop 32 Bit Kiri (MSB ke LSB)
         OSR->>DATA: out pins, 4 (Set GP4..GP7 serentak)
         BCK->>PS: side 0b00 (Falling Edge BCK — Data Stabil)
-        BCK->>PS: side 0b01 (Rising Edge BCK — PS9850 Mencuplik Bit!)
+        BCK->>PS: side 0b10 (Rising Edge BCK — PS9850 Mencuplik Bit!)
     end
     DMA->>OSR: Kirim 4x Word 32-bit (Sub-frame Kanan: FR, SR, LFE, BR)
     loop 32 Bit Kanan (MSB ke LSB)
         OSR->>DATA: out pins, 4 (Set GP4..GP7 serentak)
-        BCK->>PS: side 0b10 (Falling Edge BCK — Data Stabil)
+        BCK->>PS: side 0b01 (Falling Edge BCK — Data Stabil)
         BCK->>PS: side 0b11 (Rising Edge BCK — PS9850 Mencuplik Bit!)
     end
 ```
@@ -41,7 +41,7 @@ sequenceDiagram
 * **128 Siklus PIO per Frame Stereo (`64 × BCK` @ 50% Duty Cycle):**
   * Pada `Fs = 48 kHz`: `PIO Clock = 6,144 MHz`, `BCK = 3,072 MHz`, `LRCK = 48,00 kHz`.
   * Pada `Fs = 96 kHz`: `PIO Clock = 12,288 MHz`, `BCK = 6,144 MHz`, `LRCK = 96,00 kHz`.
-* **Perubahan Data Tepat pada *Falling Edge* `BCK`:** Seluruh 32 bit Kiri (`side 0b00`) dan 32 bit Kanan (`side 0b10`) dikeluarkan saat `BCK = 0`, sehingga sinyal pada `GP4..GP7` sudah stabil sepenuhnya ketika `BCK` naik ke `1` (`side 0b01` / `side 0b11`) saat `Pulsus PS9850` mencuplik bit.
+* **Perubahan Data Tepat pada *Falling Edge* `BCK`:** Seluruh 32 bit Kiri (`side 0b00`) dan 32 bit Kanan (`side 0b01`) dikeluarkan saat `BCK = 0`, sehingga sinyal pada `GP4..GP7` sudah stabil sepenuhnya ketika `BCK` naik ke `1` (`side 0b10` / `side 0b11`) saat `Pulsus PS9850` mencuplik bit.
 
 ---
 
@@ -71,23 +71,23 @@ flowchart LR
     end
 
     subgraph SPSC1["Wait-Free Queue 1"]
-        PKT_Q["g_packet_queue[8]\ng_pkt_write_count / g_pkt_read_count\n+ __dmb()"]
+        PKT_Q["g_packet_queue[32]\ng_pkt_write_count / g_pkt_read_count\n+ __dmb()"]
     end
 
     subgraph CORE1["Core 1 (Dedicated Unpacker in SRAM)"]
-        DEC["ht306_lossless_decode_frame()\n(< 0,03 ms / 48 frames)"]
-        INT["ht306_i2s_write_frames_6ch()\n(4-Lane Bit Interleaver)"]
+        DEC["ht306_lossless_decode_frame_ex()\n(LUT CRC-8 256 B + Verbatim)"]
+        INT["ht306_i2s_write_frames_6ch()\n(4-Lane LUT 1.024 B)"]
         DEC --> INT
     end
 
     subgraph SPSC2["Wait-Free Queue 2"]
-        PIO_RB["g_pio_ring_buffer[16 Blocks]\ng_write_total_frames / g_read_total_frames\n+ __dmb()"]
+        PIO_RB["g_pio_ring_buffer[32 Blocks]\ng_write_blocks / g_dma_queued_blocks / g_read_blocks\n+ g_ring_block_rate[32] + __dmb()"]
     end
 
     subgraph HW_DMA["DMA & PIO0 Hardware"]
-        DMA_AB["Chained DMA Channel A <-> B\n(ht306_dma_irq_handler)"]
+        DMA_AB["Chained DMA Channel A <-> B\n(ht306_dma_irq_handler + Soft-Ramp)"]
         SIL["g_silence_block (Zero Fallback)"]
-        PIO_SM["PIO0_SM0 (GP2..GP7)"]
+        PIO_SM["PIO0_SM0 (GP2..GP7) | PIO1 (WS2812 GP16)"]
         DMA_AB --> PIO_SM
         SIL -.->|"Saat Underrun"| DMA_AB
     end
