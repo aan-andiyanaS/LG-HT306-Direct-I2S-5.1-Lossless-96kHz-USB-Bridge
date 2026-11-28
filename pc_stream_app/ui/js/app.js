@@ -37,8 +37,12 @@
 
     window.sendNativeCommand("tab_switched", { tab: tabName });
 
-    if (tabName === "log" && !window.isNativeWebView2) {
-      fetchLogs();
+    if (tabName === "log") {
+      if (window.isNativeWebView2) {
+        renderLogs();
+      } else {
+        fetchLogs();
+      }
     }
   };
 

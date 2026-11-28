@@ -1,0 +1,47 @@
+; =============================================================================
+; Program PIO1: Driver LED RGB WS2812 800 kHz untuk Waveshare RP2350-Zero (GP16)
+; Bebas pemblokiran interupsi (100% hardware-timed oleh PIO1)
+; =============================================================================
+; Timing @ 8 MHz (10 siklus PIO per bit = 1.25 us / 800 kHz):
+;   T1 = 3 siklus (375 ns), T2 = 3 siklus (375 ns), T3 = 4 siklus (500 ns)
+;   Bit 0: HIGH 375 ns (T1)      | LOW 875 ns (T2 + T3)
+;   Bit 1: HIGH 750 ns (T1 + T2) | LOW 500 ns (T3)
+; =============================================================================
+
+.program ws2812
+.side_set 1
+
+.define public T1 3
+.define public T2 3
+.define public T3 4
+
+.wrap_target
+bitloop:
+    out x, 1       side 0 [T3 - 1] ; Shift MSB ke x, jaga LOW selama T3 (stall saat FIFO kosong)
+    jmp !x do_zero side 1 [T1 - 1] ; Mulai pulsa HIGH selama T1, cabang jika bit == 0
+do_one:
+    jmp bitloop    side 1 [T2 - 1] ; Bit 1: lanjutkan HIGH selama T2
+do_zero:
+    nop            side 0 [T2 - 1] ; Bit 0: turunkan ke LOW selama T2
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, float freq, bool rgbw) {
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1U, true);
+
+    pio_sm_config c = ws2812_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, pin);
+    sm_config_set_out_shift(&c, false, true, rgbw ? 32U : 24U);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+    int cycles_per_bit = ws2812_T1 + ws2812_T2 + ws2812_T3;
+    float div = (float)clock_get_hz(clk_sys) / (freq * (float)cycles_per_bit);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

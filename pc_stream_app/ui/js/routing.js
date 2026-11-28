@@ -111,7 +111,7 @@
 
     // Quick Swap SL <-> SR
     document.addEventListener("click", (e) => {
-      const swapBtn = e.target.closest("#btn-quick-swap, [onclick*='Auto-Swapping SL and SR']");
+      const swapBtn = e.target.closest("#btn-quick-swap, #btn-test-quick-swap");
       if (swapBtn) {
         e.preventDefault();
         swapSurroundChannels();

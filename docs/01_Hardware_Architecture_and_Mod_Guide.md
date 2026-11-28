@@ -29,8 +29,8 @@ flowchart LR
     subgraph MT["IC501: MediaTek MT1389MH"]
         O1["Pin ABCK"]
         O2["Pin ALRCK"]
-        O3["Pin ADATA0 (FL/FR)"]
-        O4["Pin ADATA1 (SL/SR)"]
+        O3["Pin ADATA0 (SL/FR)"]
+        O4["Pin ADATA1 (FL/SR)"]
         O5["Pin ADATA2 (C/Sub)"]
         I2C_M["Pin SDA & SCL (I2C)"]
     end
@@ -112,7 +112,7 @@ flowchart TD
    * When `AUX` mode is selected and 2-to-5.1 upmixing is engaged, `MT1389MH` attempts to synthesise multichannel audio on its own I2S pins.
    * **Because the 5 series resistors have been lifted**, this synthetic audio **terminates on the lifted pads and is discarded completely**.
 2. **`Pulsus PS9850` (`IC602`) Functions in Pure *1-to-1 Discrete 6-Channel* Mode:**
-   * `Pulsus PS9850` **does not have an onboard matrix upmixer**. Its input pins (`SDATA0`, `SDATA1`, `SDATA2`) pass all 6 discrete channels from the `RP2350-Zero` straight through the **69-Band Hardware Biquad EQ** and into the `TAS5352` power stages.
+   * `Pulsus PS9850` **does not have an onboard matrix upmixer**. Its input pins (`SDATA0`, `SDATA1`, `SDATA2`) pass all 6 discrete channels from the `RP2350-Zero` straight through the **69-Band Hardware Biquad EQ** and into the `TAS5352` power stages (`SL/FR`, `FL/SR`, `C/Sub`).
 
 ### Effect of LG Remote EQ / Sound Modes in `AUX` Mode
 
@@ -146,7 +146,7 @@ Direct injection without the `SN74LVC244A` buffer IC can be executed safely on t
 ### 1.4.2. Why Power Sequencing Must Never Be Inverted
 In the current firmware implementation ([main.c](file:///e:/Project/HomeTheather/firmware/src/main.c#L154-L155) & [i2s_engine.c](file:///e:/Project/HomeTheather/firmware/src/i2s_engine.c#L257-L260)):
 * The moment the USB Type-C connector is plugged into a PC, the `PIO0_SM0` state machine **immediately starts running**.
-* Even when no audio is playing from the host PC (transmitting `g_silence_block`), **`GP2` (`BCK`, 6.144 MHz)** and **`GP3` (`LRCK`, 96 kHz)** continuously toggle between `0 V ↔ 3.3 V`.
+* Even when no audio is playing from the host PC (transmitting `g_silence_block`), **`GP2` (`LRCK`, 96 kHz)** and **`GP3` (`BCK`, 6.144 MHz)** continuously toggle between `0 V ↔ 3.3 V`.
 * If the HT306 is powered off or in Standby (`VCC33 = 0 V`), the `3.3 V` pulses on `GP2/GP3` will flow across the internal ESD protection diodes of `IC602 (Pulsus PS9850)` into the unpowered `VCC33` rail (*parasitic back-powering*), exposing the chip to out-of-spec partial-power stress.
 
 ### 1.4.3. Strict Manual Power Sequencing Table

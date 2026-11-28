@@ -12,27 +12,27 @@ This document explains the inner workings of the multi-lane I2S signal generator
 
 Unlike conventional stereo audio DACs that accept only a single data lane, the **`Pulsus PS9850` (`IC602`)** processor receives **3 synchronous parallel I2S data lanes (`ADATA0`, `ADATA1`, `ADATA2`)** sharing a common **`BCK`** and **`LRCK`**.
 
-Within [`i2s_multi.pio`](../firmware/src/i2s_multi.pio), a single PIO State Machine (`PIO0_SM0`) drives all four data lines (`GP4..GP7`) simultaneously using the `out pins, 4` instruction, paired with a 2-bit side-set configuration for `BCK` (`GP2`) and `LRCK` (`GP3`):
+Within [`i2s_multi.pio`](../firmware/src/i2s_multi.pio), a single PIO State Machine (`PIO0_SM0`, **`8 mA` drive strength** on `GP2..GP7`) drives all four data lines (`GP4..GP7`) simultaneously using the `out pins, 4` instruction, paired with a 2-bit side-set configuration for `LRCK` (`GP2`) and `BCK` (`GP3`):
 
 ```mermaid
 sequenceDiagram
     participant DMA as DMA Ping-Pong (SRAM)
     participant OSR as PIO0 OSR (Autopull 32-bit)
-    participant BCK as GP2 (BCK) & GP3 (LRCK)
+    participant BCK as GP2 (LRCK) & GP3 (BCK)
     participant DATA as GP4..GP7 (ADATA0..3)
     participant PS as IC602 (Pulsus PS9850)
 
     Note over DMA,PS: Each 1 Time Frame (1/Fs) = 128 PIO Clock Cycles (64 BCK Cycles @ 50% Duty Cycle)
-    DMA->>OSR: Send 4x 32-bit Words (Left Sub-frame: FL, SL, C, BL)
+    DMA->>OSR: Send 4x 32-bit Words (Left Sub-frame: SL, FL, C, 0)
     loop 32 Left Bits (MSB to LSB)
         OSR->>DATA: out pins, 4 (Drive GP4..GP7 simultaneously)
         BCK->>PS: side 0b00 (Falling Edge BCK — Lines Settle)
-        BCK->>PS: side 0b01 (Rising Edge BCK — PS9850 Samples Bits!)
+        BCK->>PS: side 0b10 (Rising Edge BCK — PS9850 Samples Bits!)
     end
-    DMA->>OSR: Send 4x 32-bit Words (Right Sub-frame: FR, SR, LFE, BR)
+    DMA->>OSR: Send 4x 32-bit Words (Right Sub-frame: FR, SR, LFE, 0)
     loop 32 Right Bits (MSB to LSB)
         OSR->>DATA: out pins, 4 (Drive GP4..GP7 simultaneously)
-        BCK->>PS: side 0b10 (Falling Edge BCK — Lines Settle)
+        BCK->>PS: side 0b01 (Falling Edge BCK — Lines Settle)
         BCK->>PS: side 0b11 (Rising Edge BCK — PS9850 Samples Bits!)
     end
 ```
@@ -41,7 +41,7 @@ sequenceDiagram
 * **128 PIO Cycles per Audio Frame (`64 × BCK` at 50% Duty Cycle):**
   * At `Fs = 48 kHz`: `PIO Clock = 6.144 MHz`, `BCK = 3.072 MHz`, `LRCK = 48.00 kHz`.
   * At `Fs = 96 kHz`: `PIO Clock = 12.288 MHz`, `BCK = 6.144 MHz`, `LRCK = 96.00 kHz`.
-* **Zero Inter-Channel Skew on Falling Edge `BCK`:** All 32 Left bits (`side 0b00`) and 32 Right bits (`side 0b10`) are driven when `BCK = 0`, ensuring data lines `GP4..GP7` are completely stabilized before `BCK` rises to `1` (`side 0b01` / `side 0b11`) where the `Pulsus PS9850` latches each bit.
+* **Zero Inter-Channel Skew on Falling Edge `BCK`:** All 32 Left bits (`side 0b00`) and 32 Right bits (`side 0b01`) are driven when `BCK = 0`, ensuring data lines `GP4..GP7` are completely stabilized before `BCK` rises to `1` (`side 0b10` / `side 0b11`) where the `Pulsus PS9850` latches each bit.
 
 ---
 
@@ -49,10 +49,10 @@ sequenceDiagram
 
 Because `out pins, 4` shifts 4 bits simultaneously from the *Output Shift Register* (`OSR`) to `GP4..GP7` on every bit clock, the function `ht306_interleave_4lanes_to_pio_words()` in [`i2s_engine.c`](../firmware/src/i2s_engine.c) groups bit $b \in \lbrace 31, \dots, 0 \rbrace$ from each channel into a 4-bit nibble:
 
-* **Bit 0 (`GP4` - `ADATA0`):** `Front Left` (when `LRCK=0`) / `Front Right` (when `LRCK=1`)
-* **Bit 1 (`GP5` - `ADATA1`):** `Surround Left` (when `LRCK=0`) / `Surround Right` (when `LRCK=1`)
-* **Bit 2 (`GP6` - `ADATA2`):** `Center` (when `LRCK=0`) / `Subwoofer LFE` (when `LRCK=1`)
-* **Bit 3 (`GP7` - `ADATA3`):** `Back Left` (when `LRCK=0`) / `Back Right` (when `LRCK=1`)
+* **Bit 0 (`GP4` - `ADATA0`):** `Surround Left (SL)` (when `LRCK=0`) / `Front Right (FR)` (when `LRCK=1`)
+* **Bit 1 (`GP5` - `ADATA1`):** `Front Left (FL)` (when `LRCK=0`) / `Surround Right (SR)` (when `LRCK=1`)
+* **Bit 2 (`GP6` - `ADATA2`):** `Center (C)` (when `LRCK=0`) / `Subwoofer (LFE)` (when `LRCK=1`)
+* **Bit 3 (`GP7` - `ADATA3`):** `0` (7.1 Expansion `Back Left` / `Back Right`)
 
 Each audio sample ($1/F_s$) generates **8 32-bit words (`32 Bytes`)** inside the SRAM ring buffer (4 words for the Left sub-frame + 4 words for the Right sub-frame).
 
@@ -65,29 +65,29 @@ To deliver glitch-free audio without ever disabling global interrupts (`__disabl
 ```mermaid
 flowchart LR
     subgraph CORE0["Core 0 (USB & Control)"]
-        USB_TASK["ht306_usb_task()\n(TinyUSB Bulk Polling)"]
-        REASM["ht306_usb_process_vendor_stream()\n(64-Byte Reassembler)"]
+        USB_TASK["ht306_usb_task()\n(TinyUSB 8192B RX FIFO, Read <=256B)"]
+        REASM["ht306_usb_process_vendor_stream()\n(Bulk memcpy Reassembler)"]
         USB_TASK --> REASM
     end
 
     subgraph SPSC1["Wait-Free Queue 1"]
-        PKT_Q["g_packet_queue[8]\ng_pkt_write_count / g_pkt_read_count\n+ __dmb()"]
+        PKT_Q["g_packet_queue[64]\ng_pkt_write_count / g_pkt_read_count\n+ __dmb()"]
     end
 
     subgraph CORE1["Core 1 (Dedicated Unpacker in SRAM)"]
-        DEC["ht306_lossless_decode_frame()\n(< 0.03 ms / 48 frames)"]
-        INT["ht306_i2s_write_frames_6ch()\n(4-Lane Bit Interleaver)"]
+        DEC["ht306_lossless_decode_frame_ex()\n(256 B CRC-8 LUT + Adaptive/Verbatim)"]
+        INT["ht306_i2s_write_frames_6ch()\n(1,024 B 4-Lane LUT)"]
         DEC --> INT
     end
 
     subgraph SPSC2["Wait-Free Queue 2"]
-        PIO_RB["g_pio_ring_buffer[16 Blocks]\ng_write_total_frames / g_read_total_frames\n+ __dmb()"]
+        PIO_RB["g_pio_ring_buffer[64 Blocks]\ng_write_blocks / g_dma_queued_blocks / g_read_blocks\n+ g_ring_block_rate[64] + Prefill 32 + __dmb()"]
     end
 
     subgraph HW_DMA["DMA & PIO0 Hardware"]
-        DMA_AB["Chained DMA Channel A <-> B\n(ht306_dma_irq_handler)"]
+        DMA_AB["Chained DMA Channel A <-> B\n(ht306_dma_irq_handler + Hysteretic PLL + Soft-Ramp)"]
         SIL["g_silence_block (Zero Fallback)"]
-        PIO_SM["PIO0_SM0 (GP2..GP7)"]
+        PIO_SM["PIO0_SM0 (GP2..GP7) | PIO1 (WS2812 GP16)"]
         DMA_AB --> PIO_SM
         SIL -.->|"On Underrun"| DMA_AB
     end
@@ -100,5 +100,5 @@ flowchart LR
    * Both queues (USB Packet Queue `Core 0` $\rightarrow$ `Core 1` and I2S Ring Buffer `Core 1` $\rightarrow$ `DMA_IRQ_0`) rely on independent monotonic write/read counters paired with ARM Cortex-M33 memory barrier instructions (`__dmb()`).
 2. **Deterministic Stack Safety (`Static SRAM Allocation`):**
    * All decoding scratch buffers (`g_core1_decoded_i2s32`) are pre-allocated statically in SRAM, ensuring `Core 1`'s `2 KB` stack remains completely safe from stack overflow.
-3. **Chained Ping-Pong DMA + Zero-Silence Fallback:**
-   * Two DMA channels (`g_dma_chan_a` and `g_dma_chan_b`) ping-pong back and forth in hardware. If the host PC stalls audio transmission, the DMA interrupt automatically routes transfers to `g_silence_block` (zeroes), eliminating any pop or buzz sounds through the speakers.
+3. **Chained Ping-Pong DMA + Hysteretic PLL + Zero-Silence Fallback:**
+   * Two DMA channels (`g_dma_chan_a` and `g_dma_chan_b`) ping-pong back and forth in hardware, with a **32-block pre-fill watermark** (`16 ms @ 96 kHz` / `32 ms @ 48 kHz`) centered in the 64-block ring and a **Schmitt-trigger hysteretic PLL** (`< 16` slow / `> 48` fast $\rightarrow$ return to nominal at `32`). The `[VU 5.1]` CDC log reports `U:` (underrun), `O:` (overrun), and `Q:` (queued blocks). If the host PC stalls audio transmission, the DMA interrupt automatically routes transfers to `g_silence_block` (zeroes), eliminating any pop or buzz sounds through the speakers.

@@ -20,8 +20,8 @@ flowchart TB
         VDEV["Virtual Audio Sink\nVB-CABLE ('LG HT306 Home Theater')\n48 kHz / 96 kHz Multichannel 5.1"]
         APM["AudioPolicyManager & AudioEndpointHelper\nAuto-Switch Default Endpoint + Sync Friendly Names"]
         CAP["AudioCapture (WASAPI Event-Driven Capture)\nSmoothed Gain + Soft Limiter + Test/Sweep Tone"]
-        ENC["Lossless Encoder (lossless_codec.c)\nFLAC Order-4 Delta + Golomb-Rice\nFrame 48 samples + Sync 0xA55A + CRC-8"]
-        USBTX["UsbTransport (WinUSB & CDC ACM)\nVID 0x2E8A : PID 0x4306\nBulk Pipe EP 0x03 OUT + Serial Monitor"]
+        ENC["Lossless Encoder (lossless_codec.c)\nAdaptive Order 0/1/2/4 + Wasted-Bits + Rice\nFrame 48 samples + Sync 0xA55A + CRC-8"]
+        USBTX["UsbTransport (4-Slot Async WinUSB & CDC)\nVID 0x2E8A : PID 0x4306 | Batch 4096 B\nBulk Pipe EP 0x03 OUT + Guard <= 680 KiB/s"]
         WEBUI["Desktop Dashboard (main_webview.cpp)\nWebView2 SPA + System Tray + Realtime VU Meter"]
 
         APPS --> VDEV --> CAP --> ENC --> USBTX
@@ -32,12 +32,12 @@ flowchart TB
     subgraph MCU["2. WAVESHARE RP2350-ZERO (Cortex-M33 @ 150 MHz — 3.3V VBUS PC)"]
         direction LR
         TUSB["TinyUSB Stack\nEP 0x03 Vendor Bulk\nEP 0x82 CDC Serial"]
-        REASM["Core 0: ht306_usb_task()\n64-Byte Stream Reassembler\n& LED/VU Heartbeat"]
-        Q1["SPSC Queue 1\ng_packet_queue[32]\n__dmb() Lock-Free"]
+        REASM["Core 0: ht306_usb_task()\nTinyUSB 8192B RX FIFO (Read <= 256B)\n& LED/VU Heartbeat (U/O/Q)"]
+        Q1["SPSC Queue 1\ng_packet_queue[64]\n__dmb() Lock-Free"]
         UNPK["Core 1: ht306_core1_lossless_worker()\nLossless Decode < 0.03 ms\n+ 4-Lane Nibble Interleaver"]
-        Q2["SPSC Ring Buffer 2\ng_pio_ring_buffer[16 blocks]\n48 frames/block (32B/frame)"]
-        DMA["Chained Ping-Pong DMA (A <-> B)\ng_silence_block Fallback on Underrun\nPLL Drift Tracking +/-0.02%"]
-        PIO["PIO0_SM0 (i2s_multi.pio)\nOutput Falling-Edge BCK\nGP2..GP6 (4mA Drive Strength)"]
+        Q2["SPSC Ring Buffer 2\ng_pio_ring_buffer[64 blocks]\n48 frames/block (32 ms @ 96k, Prefill 32)"]
+        DMA["Chained Ping-Pong DMA (A <-> B)\ng_silence_block Fallback on Underrun\nSchmitt-Trigger Hysteretic PLL (16..48 -> 32)"]
+        PIO["PIO0_SM0 (i2s_multi.pio)\nOutput Falling-Edge BCK\nGP2..GP6 (8mA Drive Strength)"]
 
         TUSB --> REASM --> Q1 --> UNPK --> Q2 --> DMA --> PIO
         REASM -.->|"VU & Stats"| TUSB
@@ -63,7 +63,7 @@ flowchart TB
 
     USBTX ==>|"USB Type-C (WinUSB Bulk)"| TUSB
     USBTX -.->|"CDC ACM Serial"| TUSB
-    PIO ==>|"GP2..GP6 (BCK, LRCK, ADATA0..2)"| PROT ==>|"Via 33-Ohm Series Resistors"| INJ
+    PIO ==>|"GP2..GP6 (LRCK, BCK, ADATA0..2)"| PROT ==>|"Via 33-Ohm Series Resistors"| INJ
 ```
 
 ---
@@ -99,10 +99,10 @@ flowchart LR
     end
 
     subgraph RP["RP2350-Zero Injection (+ Buffer/33R)"]
-        G2["GP2 (BCK) -> 33R"]
-        G3["GP3 (LRCK) -> 33R"]
-        G4["GP4 (ADATA0 FL/FR) -> 33R"]
-        G5["GP5 (ADATA1 SL/SR) -> 33R"]
+        G2["GP2 (LRCK) -> 33R"]
+        G3["GP3 (BCK) -> 33R"]
+        G4["GP4 (ADATA0 SL/FR) -> 33R"]
+        G5["GP5 (ADATA1 FL/SR) -> 33R"]
         G6["GP6 (ADATA2 C/LFE) -> 33R"]
         G7["GP7 (ADATA3 7.1) — NOT CONNECTED"]
     end
@@ -139,8 +139,8 @@ flowchart LR
     T_D1 -.-x|"Physical Cut"| PS7
     T_D2 -.-x|"Physical Cut"| PS8
 
-    G2 ==>|"Pad B"| PS4
-    G3 ==>|"Pad B"| PS5
+    G2 ==>|"Pad B"| PS5
+    G3 ==>|"Pad B"| PS4
     G4 ==>|"Pad B"| PS6
     G5 ==>|"Pad B"| PS7
     G6 ==>|"Pad B"| PS8
@@ -225,10 +225,10 @@ stateDiagram-v2
 
 | Line / Signal | Pin `RP2350-Zero` | Series Resistor | Original Component on PCB `EAX63554302` (Lifted) | Upstream Test Point (`Pad A`) | Target on `IC602 (PS9850)` (`Pad B`) |
 | :--- | :---: | :---: | :--- | :---: | :--- |
-| **`I2S_BCK`** | `GP2` | `33 Ω` series | **`R648`** (`47 Ω`) | `TP609` | **Pin 4** (`SBCK`) |
-| **`I2S_LRCK`** | `GP3` | `33 Ω` series | **`R647`** (`47 Ω`) | `TP608` | **Pin 5** (`SLRCK`) |
-| **`I2S_ADATA0`** (`FL/FR`) | `GP4` | `33 Ω` series | **`R631`** (`100 Ω`) | `TP610` | **Pin 6** (`SSDIN0`) |
-| **`I2S_ADATA1`** (`SL/SR`) | `GP5` | `33 Ω` series | **`R632`** (`100 Ω`) | `TP611` | **Pin 7** (`SSDIN1`) |
+| **`I2S_LRCK`** | `GP2` | `33 Ω` series | **`R647`** (`47 Ω`) | `TP608` | **Pin 5** (`SLRCK`) |
+| **`I2S_BCK`** | `GP3` | `33 Ω` series | **`R648`** (`47 Ω`) | `TP609` | **Pin 4** (`SBCK`) |
+| **`I2S_ADATA0`** (`SL/FR`) | `GP4` | `33 Ω` series | **`R631`** (`100 Ω`) | `TP610` | **Pin 6** (`SSDIN0`) |
+| **`I2S_ADATA1`** (`FL/SR`) | `GP5` | `33 Ω` series | **`R632`** (`100 Ω`) | `TP611` | **Pin 7** (`SSDIN1`) |
 | **`I2S_ADATA2`** (`C/LFE`) | `GP6` | `33 Ω` series | **`R633`** (`100 Ω`) | `TP612` | **Pin 8** (`SSDIN2`) |
 | **Sense `VCC33` *(Option B)*** | `GP10` | `10 kΩ` series + `100 kΩ` to `GND` | *(Do not lift any resistor)* | — | **`+` Leg of `C146`** / **`IC102` Pin 2** (`3.28V` ON / `0V` Standby) |
 | **`MUX_SELECT` *(Dual-Mode)*** | `GP8` | Pull-down `10 kΩ` to `GND` | *(Uses 2× `74LVC157`, powered by `VCC33`)* | — | Pin `Select` on both `74LVC157` ICs |

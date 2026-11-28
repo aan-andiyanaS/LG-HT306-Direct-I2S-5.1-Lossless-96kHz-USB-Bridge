@@ -12,6 +12,7 @@
 
 #include "app_state.h"
 #include <windows.h>
+#include <atomic>
 #include <string>
 #include <mutex>
 
@@ -35,8 +36,8 @@ public:
     // Fast, non-blocking getter returning cached status without COM I/O storm
     AudioDriverStatus GetCachedDriverStatus();
 
-    // Execute unattended setup with UAC elevation
-    bool InstallDriver(HWND parent_hwnd);
+    // Execute unattended setup with UAC elevation (supports cooperative shutdown cancellation)
+    bool InstallDriver(HWND parent_hwnd, const std::atomic<bool>* running_flag = nullptr);
 
     // Sync and auto-rename audio endpoints in Windows registry and hide 16ch
     bool SyncEndpointNames();
@@ -57,17 +58,18 @@ public:
     bool RestorePreviousDefault(AppState& state);
 
     // Manual override control from UI Settings when testing without RP2350 hardware
-    void SetManualVisibilityOverride(bool override_enabled) { m_manual_visibility_override = override_enabled; }
-    bool GetManualVisibilityOverride() const { return m_manual_visibility_override; }
+    void SetManualVisibilityOverride(bool override_enabled) {
+        m_manual_visibility_override.store(override_enabled, std::memory_order_release);
+    }
+    bool GetManualVisibilityOverride() const {
+        return m_manual_visibility_override.load(std::memory_order_acquire);
+    }
 
     // Get current Windows default audio endpoint ID
     std::wstring GetCurrentDefaultEndpointId();
 
     // Configure 5.1 surround format (supports 48000 or 96000 Hz)
-    bool ConfigureEndpointFormat(const std::wstring& device_id, uint32_t sample_rate);
-
-    // Configure 5.1 surround (6 channels, 96 kHz, 24/32-bit)
-    bool ConfigureEndpointSurround96k(const std::wstring& device_id);
+    bool ConfigureEndpointFormat(const std::wstring& device_id, uint32_t sample_rate, HRESULT* out_last_hr = nullptr);
 
     // Apply sample rate to both eRender and eCapture HT306/VB-Cable endpoints & trigger reinit
     bool ApplySampleRateToHT306Endpoints(AppState& state, uint32_t sample_rate);
@@ -78,9 +80,6 @@ public:
 
     // Ensure VB-Cable capture endpoint (LG HT306 Loopback Stream) is DEVICE_STATE_ACTIVE
     bool EnsureCaptureEndpointActive();
-
-    // Rename endpoint friendly name in Windows Audio Property Store
-    bool RenameEndpoint(const std::wstring& device_id, const std::wstring& new_name);
 
 private:
     AudioPolicyManager() = default;
@@ -95,8 +94,8 @@ private:
     std::wstring m_ht306_guid;
     std::wstring m_ht306_capture_guid;
     DWORD m_ht306_reg_state = 1;
-    bool m_switched_to_ht306 = false;
-    bool m_manual_visibility_override = false;
+    bool m_initial_sync_done = false;
+    std::atomic<bool> m_manual_visibility_override{false};
     AudioDriverStatus m_cached_status;
     uint64_t m_last_check_tick = 0;
 };

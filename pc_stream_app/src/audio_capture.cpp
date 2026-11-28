@@ -206,7 +206,11 @@ bool AudioCapture::Start() {
     ResetEvent(m_stop_event);
     m_running = true;
     m_thread = CreateThread(NULL, 0, CaptureThreadProc, this, 0, NULL);
-    return (m_thread != NULL);
+    if (m_thread == NULL) {
+        m_running = false;
+        return false;
+    }
+    return true;
 }
 
 void AudioCapture::Stop() {
@@ -214,10 +218,18 @@ void AudioCapture::Stop() {
     m_running = false;
     if (m_stop_event) SetEvent(m_stop_event);
     if (m_thread) {
-        WaitForSingleObject(m_thread, 2000);
+        WaitForSingleObject(m_thread, 5000);
         CloseHandle(m_thread);
         m_thread = NULL;
     }
+}
+
+bool AudioCapture::WaitStopMs(DWORD ms) const {
+    if (m_stop_event) {
+        return (WaitForSingleObject(m_stop_event, ms) == WAIT_OBJECT_0);
+    }
+    Sleep(ms);
+    return !m_running.load();
 }
 
 bool AudioCapture::IsRunning() const {
@@ -257,6 +269,7 @@ AudioStreamFormat AudioCapture::ParseWaveFormat(const WAVEFORMATEX* pwfx) {
                pwfx->cbSize >= (sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))) {
         const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pwfx);
         fmt.valid_bits = ext->Samples.wValidBitsPerSample ? ext->Samples.wValidBitsPerSample : pwfx->wBitsPerSample;
+        fmt.channel_mask = ext->dwChannelMask;
         if (IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
             fmt.format = (pwfx->wBitsPerSample == 32) ? SampleFormat::IEEE_FLOAT32 : SampleFormat::UNSUPPORTED;
         } else if (IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_PCM)) {
@@ -283,8 +296,9 @@ float AudioCapture::ApplySoftLimiter(float x) {
 float AudioCapture::GenerateTestSample(uint32_t mix_rate, float amp) {
     if (mix_rate == 0) mix_rate = 96000;
     const float two_pi = 6.28318530717958647692f;
+    const int sig_type = m_state.test_signal_type.load();
 
-    if (m_state.test_signal_type == 1) {
+    if (sig_type == 1) {
         m_lcg_seed = m_lcg_seed * 1664525u + 1013904223u;
         float white = ((float)(m_lcg_seed & 0x7FFFFFFF) / 1073741824.0f) - 1.0f;
 
@@ -297,7 +311,7 @@ float AudioCapture::GenerateTestSample(uint32_t mix_rate, float amp) {
         float pink = m_b0 + m_b1 + m_b2 + m_b3 + m_b4 + m_b5 + m_b6 + white * 0.5362f;
         m_b6 = white * 0.115926f;
         return pink * 0.11f * amp;
-    } else if (m_state.test_signal_type == 0) {
+    } else if (sig_type == 0) {
         const float f_start = 40.0f;
         const float f_end = 16000.0f;
         const float duration = 1.5f;
@@ -326,54 +340,68 @@ float AudioCapture::GenerateTestSample(uint32_t mix_rate, float amp) {
 }
 
 void AudioCapture::NormalizeChannelsTo6Ch(
-    const float* src6,
+    const float src8[8],
     float dst6[6],
     uint16_t in_channels,
-    bool bit_perfect
+    uint32_t channel_mask,
+    float downmix_lin,
+    const AudioDspSettings& settings
 ) const {
-    for (int c = 0; c < 6; ++c) {
-        dst6[c] = src6[c];
+    ChannelRoutingMode mode = ChannelRoutingMode::DISCRETE_1TO1;
+    switch (settings.routing_preset) {
+        case RoutingPreset::STEREO_UPMIX: mode = ChannelRoutingMode::STEREO_UPMIX; break;
+        case RoutingPreset::DOWNMIX_71:   mode = ChannelRoutingMode::DOWNMIX_71;   break;
+        case RoutingPreset::DUAL_MONO:    mode = ChannelRoutingMode::DUAL_MONO;    break;
+        case RoutingPreset::DISCRETE_1TO1:
+        default:                          mode = ChannelRoutingMode::DISCRETE_1TO1; break;
     }
-    if (in_channels >= 6) {
-        if (!bit_perfect) {
-            if (m_state.settings.routing_preset == RoutingPreset::STEREO_UPMIX) {
-                float L = dst6[0];
-                float R = dst6[1];
-                dst6[2] = (L + R) * 0.5f;
-                dst6[3] = (L + R) * 0.35f;
-                dst6[4] = L * 0.707f;
-                dst6[5] = R * 0.707f;
-            } else if (m_state.settings.routing_preset == RoutingPreset::DUAL_MONO) {
-                float L = dst6[0];
-                float R = dst6[1];
-                dst6[0] = dst6[2] = dst6[4] = L;
-                dst6[1] = dst6[3] = dst6[5] = R;
-            }
-        }
-    } else if (in_channels == 2) {
-        float L = src6[0];
-        float R = src6[1];
-        if (!bit_perfect && m_state.settings.routing_preset == RoutingPreset::STEREO_UPMIX) {
-            dst6[0] = L;
-            dst6[1] = R;
-            dst6[2] = (L + R) * 0.5f;
-            dst6[3] = (L + R) * 0.35f;
-            dst6[4] = L * 0.707f;
-            dst6[5] = R * 0.707f;
-        } else if (!bit_perfect && m_state.settings.routing_preset == RoutingPreset::DUAL_MONO) {
-            dst6[0] = dst6[2] = dst6[4] = L;
-            dst6[1] = dst6[3] = dst6[5] = R;
-        } else {
-            dst6[0] = L;
-            dst6[1] = R;
-            dst6[2] = dst6[3] = dst6[4] = dst6[5] = 0.0f;
-        }
-    } else if (in_channels == 1) {
-        float mono = src6[0];
-        dst6[0] = mono;
-        dst6[1] = mono;
-        dst6[2] = dst6[3] = dst6[4] = dst6[5] = 0.0f;
+    NormalizeChannelsTo6ChLinear(
+        src8,
+        dst6,
+        in_channels,
+        channel_mask,
+        downmix_lin,
+        mode,
+        settings.bit_perfect_mode
+    );
+}
+
+void AudioCapture::FlushUsbBatch(
+    std::vector<uint8_t>& usb_batch,
+    uint32_t& usb_batch_packets,
+    uint32_t output_rate
+) {
+    if (usb_batch.empty()) {
+        usb_batch_packets = 0;
+        return;
     }
+
+    const size_t batch_bytes = usb_batch.size();
+    const uint32_t batch_pkts = usb_batch_packets;
+    const bool was_open = m_transport.IsOpen();
+    bool ok = false;
+    if (was_open) {
+        ok = m_transport.WritePacket(usb_batch.data(), batch_bytes);
+    }
+
+    if (ok) {
+        m_state.telemetry.total_frames.fetch_add(static_cast<uint64_t>(batch_pkts) * 48u);
+        m_state.telemetry.total_packets.fetch_add(batch_pkts);
+        if (batch_pkts > 0u && output_rate > 0u) {
+            float avg_pkt_bytes = static_cast<float>(batch_bytes) / static_cast<float>(batch_pkts);
+            m_state.telemetry.throughput_kbs.store(
+                (avg_pkt_bytes * (static_cast<float>(output_rate) / 48.0f)) / 1024.0f
+            );
+        }
+    } else {
+        m_state.telemetry.throughput_kbs.store(0.0f);
+        if (was_open) {
+            m_state.telemetry.underrun_count.fetch_add(1);
+        }
+    }
+
+    usb_batch.clear();
+    usb_batch_packets = 0;
 }
 
 void AudioCapture::EmitProcessedFrames6Ch(
@@ -382,35 +410,45 @@ void AudioCapture::EmitProcessedFrames6Ch(
     uint32_t output_rate,
     bool is_sweep,
     bool allow_silence_gate,
+    const AudioDspSettings& settings,
     std::vector<int32_t>& pcm6ch_block,
     int& frame_in_block,
-    std::vector<uint8_t>& usb_packet
+    std::vector<uint8_t>& usb_packet,
+    std::vector<uint8_t>& usb_batch,
+    uint32_t& usb_batch_packets,
+    ULONGLONG& last_meter_update_tick
 ) {
     if (!frames_6ch || num_frames == 0 || output_rate == 0) {
         return;
     }
 
+    static constexpr uint32_t kUsbBatchMaxSubframes = 10u;
+    static constexpr size_t kUsbBatchMaxBytes = 4096u;
+
     float ch_max[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
     bool ch_clipped[6] = { false, false, false, false, false, false };
 
-    const bool bit_perfect = m_state.settings.bit_perfect_mode;
+    const bool bit_perfect = settings.bit_perfect_mode;
+    bool bit_perfect_settled = bit_perfect;
     float target_gain[6];
     if (bit_perfect) {
         for (int c = 0; c < 6; ++c) {
             target_gain[c] = 1.0f;
-            m_smoothed_gain[c] = 1.0f;
+            if (std::fabs(m_smoothed_gain[c] - 1.0f) > 1e-4f) {
+                bit_perfect_settled = false;
+            }
         }
     } else {
-        float master_db = (std::clamp)(m_state.settings.master_volume_db, -60.0f, 6.0f);
+        float master_db = (std::clamp)(settings.master_volume_db, -60.0f, 6.0f);
         float master_lin = std::pow(10.0f, master_db / 20.0f);
         for (int c = 0; c < 6; ++c) {
-            target_gain[c] = master_lin * std::pow(10.0f, m_state.settings.trims[c] / 20.0f);
+            target_gain[c] = master_lin * std::pow(10.0f, settings.trims[c] / 20.0f);
         }
     }
 
     bool any_solo = false;
     for (int c = 0; c < 6; ++c) {
-        if (m_state.settings.solos[c]) {
+        if (settings.solos[c]) {
             any_solo = true;
             break;
         }
@@ -422,15 +460,35 @@ void AudioCapture::EmitProcessedFrames6Ch(
         const float* in6 = &frames_6ch[f * 6u];
         float routed[6];
 
-        if (is_sweep || bit_perfect) {
+        if (is_sweep) {
             for (int c = 0; c < 6; ++c) {
                 routed[c] = in6[c];
             }
+        } else if (bit_perfect) {
+            if (bit_perfect_settled) {
+                for (int c = 0; c < 6; ++c) {
+                    routed[c] = in6[c];
+                }
+            } else {
+                bool all_settled = true;
+                for (int c = 0; c < 6; ++c) {
+                    m_smoothed_gain[c] += 0.005f * (1.0f - m_smoothed_gain[c]);
+                    if (std::fabs(m_smoothed_gain[c] - 1.0f) <= 1e-4f) {
+                        m_smoothed_gain[c] = 1.0f;
+                    } else {
+                        all_settled = false;
+                    }
+                    routed[c] = in6[c] * m_smoothed_gain[c];
+                }
+                if (all_settled) {
+                    bit_perfect_settled = true;
+                }
+            }
         } else {
             for (int c = 0; c < 6; ++c) {
-                int src_idx = (std::clamp)(m_state.settings.routing_map[c], 0, 5);
+                int src_idx = (std::clamp)(settings.routing_map[c], 0, 5);
                 float val = in6[src_idx];
-                if (m_state.settings.phase_inverts[c]) {
+                if (settings.phase_inverts[c]) {
                     val = -val;
                 }
                 m_smoothed_gain[c] += 0.005f * (target_gain[c] - m_smoothed_gain[c]);
@@ -440,12 +498,12 @@ void AudioCapture::EmitProcessedFrames6Ch(
 
         if (!is_sweep) {
             for (int c = 0; c < 6; ++c) {
-                if (m_state.settings.mute_master || m_state.settings.mutes[c] ||
-                    (any_solo && !m_state.settings.solos[c])) {
+                if (settings.mute_master || settings.mutes[c] ||
+                    (any_solo && !settings.solos[c])) {
                     routed[c] = 0.0f;
                 }
             }
-            if (m_state.settings.limiter_enabled && !bit_perfect) {
+            if (settings.limiter_enabled && !bit_perfect) {
                 for (int c = 0; c < 6; ++c) {
                     routed[c] = ApplySoftLimiter(routed[c]);
                 }
@@ -464,7 +522,7 @@ void AudioCapture::EmitProcessedFrames6Ch(
             if (abs_s > m_current_block_peak) {
                 m_current_block_peak = abs_s;
             }
-            pcm6ch_block[static_cast<size_t>(frame_in_block) * 6u + c] = FloatToInt32Safe(s);
+            pcm6ch_block[static_cast<size_t>(frame_in_block) * 6u + c] = FloatToInt24Safe(s);
         }
 
         frame_in_block++;
@@ -480,12 +538,14 @@ void AudioCapture::EmitProcessedFrames6Ch(
             }
 
             if (allow_silence_gate && !is_sweep && m_silent_blocks_streak > silence_limit) {
-                // Keep RP2350 idle so its LED returns cleanly to Blue Standby
+                // Flush any already-batched subframes before entering silence standby
+                FlushUsbBatch(usb_batch, usb_batch_packets, output_rate);
+                m_state.telemetry.throughput_kbs.store(0.0f);
                 continue;
             }
 
             size_t enc_len = 0;
-            uint8_t enc_flags = HT306_FLAG_BITDEPTH_32;
+            uint8_t enc_flags = HT306_FLAG_BITDEPTH_24;
             if (output_rate >= 88200u) {
                 enc_flags |= HT306_FLAG_RATE_96KHZ;
             }
@@ -493,46 +553,62 @@ void AudioCapture::EmitProcessedFrames6Ch(
             HT306_CodecStatus_t st = ht306_lossless_encode_frame_flags(
                 pcm6ch_block.data(),
                 48,
-                m_seq++,
+                m_seq,
                 enc_flags,
                 usb_packet.data(),
                 HT306_MAX_PACKET_BYTES,
                 &enc_len
             );
 
-            if (st == HT306_CODEC_OK && enc_len > 0 && enc_len <= HT306_MAX_PACKET_BYTES) {
-                m_burst_packets_sent++;
-                if (m_burst_packets_sent > 0 && (m_burst_packets_sent % 8u) == 0u) {
-                    // Micro-pace large WASAPI bursts so RP2350's 16-block ring buffer never overflows
-                    Sleep(2);
+            // Unified safe USB 1.1 TT ceiling (~680 KiB/s): <= 348 B @ 96 kHz, <= 696 B @ 48 kHz
+            const size_t max_safe_pkt_bytes = (output_rate >= 88200u) ? 348u : 696u;
+            if (st == HT306_CODEC_OK && enc_len > max_safe_pkt_bytes) {
+                static constexpr uint8_t kShiftFallback[] = { 1u, 2u, 3u, 4u, 5u, 6u, 7u };
+                for (uint8_t sc : kShiftFallback) {
+                    size_t retry_len = 0;
+                    uint8_t retry_flags = static_cast<uint8_t>(enc_flags | HT306_FLAG_ENCODE_SHIFT(sc));
+                    if (ht306_lossless_encode_frame_flags(
+                            pcm6ch_block.data(),
+                            48,
+                            m_seq,
+                            retry_flags,
+                            usb_packet.data(),
+                            HT306_MAX_PACKET_BYTES,
+                            &retry_len) == HT306_CODEC_OK) {
+                        enc_len = retry_len;
+                        if (enc_len <= max_safe_pkt_bytes) {
+                            break;
+                        }
+                    }
                 }
-                m_transport.WritePacket(usb_packet.data(), enc_len, 50);
-                m_state.telemetry.total_frames.fetch_add(48);
-                m_state.telemetry.total_packets.fetch_add(1);
-                m_state.telemetry.throughput_kbs.store(
-                    (static_cast<float>(enc_len) * (static_cast<float>(output_rate) / 48.0f)) / 1024.0f
+            }
+            m_seq++;
+
+            if (st == HT306_CODEC_OK && enc_len > 0 && enc_len <= HT306_MAX_PACKET_BYTES) {
+                if (!usb_batch.empty() &&
+                    (usb_batch_packets >= kUsbBatchMaxSubframes ||
+                     (usb_batch.size() + enc_len) > kUsbBatchMaxBytes)) {
+                    FlushUsbBatch(usb_batch, usb_batch_packets, output_rate);
+                }
+                usb_batch.insert(
+                    usb_batch.end(),
+                    usb_packet.begin(),
+                    usb_packet.begin() + static_cast<std::ptrdiff_t>(enc_len)
                 );
+                usb_batch_packets++;
+
+                if (usb_batch_packets >= kUsbBatchMaxSubframes) {
+                    FlushUsbBatch(usb_batch, usb_batch_packets, output_rate);
+                }
             }
         }
     }
 
-    for (int c = 0; c < 6; ++c) {
-        float peak = ch_max[c];
-        float db = -60.0f;
-        if (peak > 1e-5f) {
-            db = 20.0f * std::log10(peak);
-        }
-        if (db < -60.0f) db = -60.0f;
-        if (db > 0.0f) db = 0.0f;
+    // Flush remaining encoded subframes at the end of this chunk
+    FlushUsbBatch(usb_batch, usb_batch_packets, output_rate);
 
-        m_state.meters[c].peak_db = (m_state.meters[c].peak_db * 0.7f) + (db * 0.3f);
-        if (db > m_state.meters[c].peak_hold_db) {
-            m_state.meters[c].peak_hold_db = db;
-        } else {
-            m_state.meters[c].peak_hold_db -= 0.5f;
-        }
-        m_state.meters[c].clipped = ch_clipped[c];
-    }
+    m_state.UpdateMetersFromPeaks(ch_max, ch_clipped);
+    last_meter_update_tick = GetTickCount64();
 }
 
 void AudioCapture::PumpSweepIfActive(
@@ -541,7 +617,10 @@ void AudioCapture::PumpSweepIfActive(
     uint32_t sweep_rate,
     std::vector<int32_t>& pcm6ch_block,
     int& frame_in_block,
-    std::vector<uint8_t>& usb_packet
+    std::vector<uint8_t>& usb_packet,
+    std::vector<uint8_t>& usb_batch,
+    uint32_t& usb_batch_packets,
+    ULONGLONG& last_meter_update_tick
 ) {
     int active_sweep_ch = m_state.sweep_active_channel.load();
     bool is_sweep = m_state.sweep_running.load() || (active_sweep_ch >= 0 && active_sweep_ch < 6);
@@ -558,6 +637,8 @@ void AudioCapture::PumpSweepIfActive(
         m_last_sweep_ch = active_sweep_ch;
         m_chirp_t = 0.0f;
         m_chirp_phase = 0.0f;
+        frame_in_block = 0;
+        m_current_block_peak = 0.0f;
     }
 
     LARGE_INTEGER qpc_now;
@@ -577,7 +658,8 @@ void AudioCapture::PumpSweepIfActive(
         );
     }
 
-    float test_dbfs = (std::clamp)(m_state.test_level_dbfs, -60.0f, 0.0f);
+    float raw_dbfs = m_state.test_level_dbfs.load();
+    float test_dbfs = std::isfinite(raw_dbfs) ? (std::clamp)(raw_dbfs, -60.0f, 0.0f) : -20.0f;
     float test_amp = std::pow(10.0f, test_dbfs / 20.0f);
 
     const size_t total_frames = static_cast<size_t>(blocks) * 48u;
@@ -587,16 +669,20 @@ void AudioCapture::PumpSweepIfActive(
             GenerateTestSample(sweep_rate, test_amp);
     }
 
-    m_burst_packets_sent = 0;
+    AudioDspSettings settings_snap = m_state.GetAudioDspSettingsSnapshot();
     EmitProcessedFrames6Ch(
         m_in_frames_6ch.data(),
         total_frames,
         sweep_rate,
         true,
         false,
+        settings_snap,
         pcm6ch_block,
         frame_in_block,
-        usb_packet
+        usb_packet,
+        usb_batch,
+        usb_batch_packets,
+        last_meter_update_tick
     );
 }
 
@@ -608,13 +694,24 @@ void AudioCapture::CaptureLoop() {
 
     std::vector<int32_t> pcm6ch_block(48 * 6, 0);
     std::vector<uint8_t> usb_packet(HT306_MAX_PACKET_BYTES, 0);
+    std::vector<uint8_t> usb_batch;
+    usb_batch.reserve(4096);
+    uint32_t usb_batch_packets = 0;
     int frame_in_block = 0;
+    ULONGLONG last_meter_update_tick = GetTickCount64();
 
     LARGE_INTEGER qpc_freq;
     QueryPerformanceFrequency(&qpc_freq);
     LARGE_INTEGER qpc_last;
     QueryPerformanceCounter(&qpc_last);
 
+    IMMDeviceEnumerator* enumerator = NULL;
+    CoCreateInstance(
+        __uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
+        __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator)
+    );
+
+    try {
     while (m_running) {
         int current_dev_idx = 0;
         AudioEndpointInfo active_dev = m_state.GetActiveDeviceSnapshot(&current_dev_idx);
@@ -624,19 +721,25 @@ void AudioCapture::CaptureLoop() {
         OpenedStream stream{};
         bool stream_opened = false;
 
-        IMMDeviceEnumerator* enumerator = NULL;
-        HRESULT hr_enum = CoCreateInstance(
-            __uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
-            __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator)
-        );
+        if (!enumerator) {
+            CoCreateInstance(
+                __uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
+                __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator)
+            );
+        }
 
-        if (SUCCEEDED(hr_enum) && enumerator) {
+        if (enumerator) {
             IMMDevice* render_dev = NULL;
+            HRESULT dev_hr = S_OK;
             if (!active_dev.id.empty()) {
-                enumerator->GetDevice(active_dev.id.c_str(), &render_dev);
+                dev_hr = enumerator->GetDevice(active_dev.id.c_str(), &render_dev);
             }
             if (!render_dev) {
-                enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &render_dev);
+                dev_hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &render_dev);
+            }
+            if (!render_dev && (dev_hr == RPC_E_DISCONNECTED || dev_hr == AUDCLNT_E_SERVICE_NOT_RUNNING || FAILED(dev_hr))) {
+                enumerator->Release();
+                enumerator = NULL;
             }
 
             if (render_dev) {
@@ -726,8 +829,6 @@ void AudioCapture::CaptureLoop() {
                 render_dev->Release();
                 render_dev = NULL;
             }
-            enumerator->Release();
-            enumerator = NULL;
         }
 
         if (!stream_opened) {
@@ -739,6 +840,9 @@ void AudioCapture::CaptureLoop() {
             m_state.telemetry.sample_rate.store(is_sweep ? sweep_rate : 0u);
             m_state.telemetry.input_sample_rate.store(0u);
             m_state.telemetry.rate_clamped.store(false);
+            if (!is_sweep) {
+                m_state.telemetry.throughput_kbs.store(0.0f);
+            }
 
             if (stream.last_hr != S_OK && stream.last_hr != E_ACCESSDENIED) {
                 LogThrottled(LogLevel::LOG_WARN, "cap_open_fail_" + HexHr(stream.last_hr),
@@ -757,8 +861,21 @@ void AudioCapture::CaptureLoop() {
                                  (m_state.sweep_active_channel.load() >= 0 && m_state.sweep_active_channel.load() < 6);
                 m_state.telemetry.capture_path.store(sweep_now ? CapturePathMode::SWEEP_ONLY : CapturePathMode::DISCONNECTED);
                 m_state.telemetry.sample_rate.store(sweep_now ? sweep_rate : 0u);
-                PumpSweepIfActive(qpc_freq, qpc_last, sweep_rate, pcm6ch_block, frame_in_block, usb_packet);
-                Sleep(1);
+                if (sweep_now) {
+                    PumpSweepIfActive(
+                        qpc_freq, qpc_last, sweep_rate, pcm6ch_block, frame_in_block,
+                        usb_packet, usb_batch, usb_batch_packets, last_meter_update_tick
+                    );
+                } else {
+                    ULONGLONG now_idle = GetTickCount64();
+                    if (now_idle - last_meter_update_tick >= 30) {
+                        last_meter_update_tick = now_idle;
+                        m_state.DecayMeters();
+                    }
+                }
+                if (WaitStopMs(sweep_now ? 1 : 20)) {
+                    break;
+                }
             }
             continue;
         }
@@ -772,15 +889,18 @@ void AudioCapture::CaptureLoop() {
                 " Hz, " + std::to_string(fmt.channels) + " ch). Pastikan PCM/Float dan non-encoded AC3/DTS.");
             stream.client->Stop();
             stream.Release();
-            Sleep(250);
+            WaitStopMs(250);
             continue;
         }
 
-        // Clean slate for every re-initialization (no mixed-rate frame tail!)
+        // Clean slate for every re-initialization (explicitly reset resampler even when rate unchanged!)
         frame_in_block = 0;
         m_current_block_peak = 0.0f;
         m_silent_blocks_streak = 0;
+        usb_batch.clear();
+        usb_batch_packets = 0;
         m_resampler.Configure(fmt.sample_rate, rr.target_rate);
+        m_resampler.Reset();
 
         m_state.telemetry.capture_path.store(
             stream.is_vbcable_capture ? CapturePathMode::VBCABLE_CAPTURE : CapturePathMode::LOOPBACK
@@ -789,7 +909,7 @@ void AudioCapture::CaptureLoop() {
         m_state.telemetry.sample_rate.store(rr.target_rate);
         m_state.telemetry.rate_clamped.store(rr.clamped_from_high);
         m_state.telemetry.channels.store(6);
-        m_state.telemetry.bit_depth.store(32);
+        m_state.telemetry.bit_depth.store(24);
 
         {
             std::string path_name = stream.is_vbcable_capture
@@ -798,7 +918,7 @@ void AudioCapture::CaptureLoop() {
             std::string key = path_name + "_" + std::to_string(fmt.sample_rate) + "_" + std::to_string(rr.target_rate);
             std::string msg = "Jalur aktif: " + path_name + " | Input " + std::to_string(fmt.sample_rate) +
                               " Hz (" + std::to_string(fmt.channels) + "ch) -> RP2350 " +
-                              std::to_string(rr.target_rate) + " Hz";
+                              std::to_string(rr.target_rate) + " Hz (24-bit Lossless)";
             if (rr.clamped_from_high) {
                 msg += " [Mode Auto: Dinetralkan <=96 kHz]";
             } else if (rr.resampled) {
@@ -809,6 +929,8 @@ void AudioCapture::CaptureLoop() {
 
         QueryPerformanceCounter(&qpc_last);
         ULONGLONG last_def_check_tick = GetTickCount64();
+        ULONGLONG last_capture_reprobe_tick = last_def_check_tick;
+        bool was_sweep = false;
 
         while (m_running) {
             if (m_state.capture_reinit_generation.load(std::memory_order_acquire) != current_gen ||
@@ -817,26 +939,64 @@ void AudioCapture::CaptureLoop() {
                 break;
             }
 
-            // If capturing from VB-Cable while set to Default Windows Device (index 0),
-            // verify every 1s that Windows default playback is still HT306.
-            if (stream.is_vbcable_capture && current_dev_idx == 0) {
-                ULONGLONG now_tick = GetTickCount64();
+            const ULONGLONG now_tick = GetTickCount64();
+
+            // If capturing while set to Default Windows Device (index 0),
+            // verify every 1s that Windows default playback endpoint has not changed.
+            if (current_dev_idx == 0 && enumerator) {
                 if (now_tick - last_def_check_tick >= 1000) {
                     last_def_check_tick = now_tick;
-                    IMMDeviceEnumerator* chk_enum = NULL;
-                    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
-                                                   __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&chk_enum))) && chk_enum) {
-                        std::wstring cur_def = QueryCurrentDefaultRenderId(chk_enum);
-                        chk_enum->Release();
-                        if (!cur_def.empty() && cur_def != stream.resolved_render_id) {
-                            break;
+                    std::wstring cur_def = QueryCurrentDefaultRenderId(enumerator);
+                    if (!cur_def.empty() && cur_def != stream.resolved_render_id) {
+                        break;
+                    }
+                }
+            }
+
+            // If on LOOPBACK fallback for HT306 target, re-probe eCapture every 5s so we recover Exclusive-safe path
+            if (stream.is_ht306_target && !stream.is_vbcable_capture && enumerator &&
+                (now_tick - last_capture_reprobe_tick >= 5000)) {
+                last_capture_reprobe_tick = now_tick;
+                std::wstring cap_id = AudioPolicyManager::Instance().GetCaptureEndpointId();
+                if (!cap_id.empty()) {
+                    IMMDevice* cap_dev = NULL;
+                    DWORD cap_state = 0;
+                    if (SUCCEEDED(enumerator->GetDevice(cap_id.c_str(), &cap_dev)) && cap_dev) {
+                        cap_dev->GetState(&cap_state);
+                        if (cap_state == DEVICE_STATE_ACTIVE) {
+                            IAudioClient* probe_client = NULL;
+                            IAudioCaptureClient* probe_cap = NULL;
+                            WAVEFORMATEX* probe_wfx = NULL;
+                            if (InitializeWasapiClient(cap_dev, 0, 300000, &probe_client, &probe_cap, &probe_wfx, NULL)) {
+                                probe_client->Stop();
+                                probe_cap->Release();
+                                probe_client->Release();
+                                CoTaskMemFree(probe_wfx);
+                                cap_dev->Release();
+                                break; // Switch cleanly to primary eCapture path on outer re-open
+                            }
                         }
+                        cap_dev->Release();
                     }
                 }
             }
 
             int active_sweep_ch = m_state.sweep_active_channel.load();
             bool is_sweep = m_state.sweep_running.load() || (active_sweep_ch >= 0 && active_sweep_ch < 6);
+
+            if (is_sweep && !was_sweep) {
+                frame_in_block = 0;
+                m_current_block_peak = 0.0f;
+                usb_batch.clear();
+                usb_batch_packets = 0;
+            } else if (!is_sweep && was_sweep) {
+                m_resampler.Reset();
+                frame_in_block = 0;
+                m_current_block_peak = 0.0f;
+                usb_batch.clear();
+                usb_batch_packets = 0;
+            }
+            was_sweep = is_sweep;
 
             UINT32 packet_length = 0;
             HRESULT hr = stream.capture->GetNextPacketSize(&packet_length);
@@ -858,14 +1018,25 @@ void AudioCapture::CaptureLoop() {
                         break;
                     }
                 }
-                PumpSweepIfActive(qpc_freq, qpc_last, rr.target_rate, pcm6ch_block, frame_in_block, usb_packet);
-                Sleep(1);
+                PumpSweepIfActive(
+                    qpc_freq, qpc_last, rr.target_rate, pcm6ch_block, frame_in_block,
+                    usb_packet, usb_batch, usb_batch_packets, last_meter_update_tick
+                );
+                if (WaitStopMs(1)) {
+                    break;
+                }
                 continue;
             }
 
             if (packet_length == 0) {
                 QueryPerformanceCounter(&qpc_last);
-                Sleep(2);
+                if (now_tick - last_meter_update_tick >= 30) {
+                    last_meter_update_tick = now_tick;
+                    m_state.DecayMeters();
+                }
+                if (WaitStopMs(1)) {
+                    break;
+                }
                 continue;
             }
 
@@ -875,8 +1046,13 @@ void AudioCapture::CaptureLoop() {
                 DWORD flags = 0;
 
                 hr = stream.capture->GetBuffer(&pData, &numFramesAvailable, &flags, NULL, NULL);
-                if (FAILED(hr)) {
+                if (FAILED(hr) || hr == AUDCLNT_S_BUFFER_EMPTY) {
                     packet_length = 0;
+                    break;
+                }
+                if (numFramesAvailable > 65536u) {
+                    stream.capture->ReleaseBuffer(numFramesAvailable);
+                    hr = E_FAIL;
                     break;
                 }
 
@@ -884,42 +1060,56 @@ void AudioCapture::CaptureLoop() {
                     m_resampler.Reset();
                     frame_in_block = 0;
                     m_current_block_peak = 0.0f;
+                    usb_batch.clear();
+                    usb_batch_packets = 0;
                 }
 
                 bool is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) || (pData == nullptr);
                 if (numFramesAvailable > 0) {
+                    const AudioDspSettings settings_snap = m_state.GetAudioDspSettingsSnapshot();
+                    const float downmix_lin = ComputeDownmixLinear(settings_snap.downmix_attenuation_db);
                     m_in_frames_6ch.resize(static_cast<size_t>(numFramesAvailable) * 6u);
                     if (is_silent) {
                         std::fill(m_in_frames_6ch.begin(), m_in_frames_6ch.end(), 0.0f);
                     } else {
-                        float decoded[6];
+                        float decoded[8];
                         for (UINT32 f = 0; f < numFramesAvailable; ++f) {
-                            DecodeInterleavedFrameToFloat6(pData, f, fmt, decoded);
+                            DecodeInterleavedFrameToFloat8(pData, f, fmt, decoded);
                             NormalizeChannelsTo6Ch(
                                 decoded,
                                 &m_in_frames_6ch[static_cast<size_t>(f) * 6u],
                                 fmt.channels,
-                                m_state.settings.bit_perfect_mode
+                                fmt.channel_mask,
+                                downmix_lin,
+                                settings_snap
                             );
                         }
                     }
 
-                    size_t out_frames = m_resampler.Process(
-                        m_in_frames_6ch.data(),
-                        numFramesAvailable,
-                        m_resampled_6ch
-                    );
+                    const float* out_ptr = m_in_frames_6ch.data();
+                    size_t out_frames = static_cast<size_t>(numFramesAvailable);
+                    if (!m_resampler.IsBypass()) {
+                        out_frames = m_resampler.Process(
+                            m_in_frames_6ch.data(),
+                            numFramesAvailable,
+                            m_resampled_6ch
+                        );
+                        out_ptr = m_resampled_6ch.data();
+                    }
 
-                    m_burst_packets_sent = 0;
                     EmitProcessedFrames6Ch(
-                        m_resampled_6ch.data(),
+                        out_ptr,
                         out_frames,
                         rr.target_rate,
                         false,
-                        stream.is_vbcable_capture,
+                        true, // Allow silence gate in both VBCABLE_CAPTURE and LOOPBACK
+                        settings_snap,
                         pcm6ch_block,
                         frame_in_block,
-                        usb_packet
+                        usb_packet,
+                        usb_batch,
+                        usb_batch_packets,
+                        last_meter_update_tick
                     );
                 }
 
@@ -939,10 +1129,17 @@ void AudioCapture::CaptureLoop() {
         stream.client->Stop();
         stream.Release();
         if (m_running) {
-            Sleep(20);
+            WaitStopMs(20);
         }
     }
+    } catch (const std::exception& e) {
+        m_state.AddLog(LogLevel::LOG_ERROR, "WASAPI", std::string("Capture loop exception: ") + e.what());
+    }
 
+    if (enumerator) {
+        enumerator->Release();
+        enumerator = NULL;
+    }
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     if (SUCCEEDED(hr_co)) CoUninitialize();
     timeEndPeriod(1);

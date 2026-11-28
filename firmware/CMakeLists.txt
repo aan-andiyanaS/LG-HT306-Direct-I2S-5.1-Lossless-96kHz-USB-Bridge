@@ -48,6 +48,10 @@ if(DEFINED ENV{PICO_SDK_PATH} OR DEFINED PICO_SDK_PATH)
         ${CMAKE_CURRENT_LIST_DIR}/src/i2s_multi.pio
     )
 
+    pico_generate_pio_header(ht306_rp2350_zero
+        ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio
+    )
+
     # Matikan stdio_usb bawaan agar tidak bentrok dengan TinyUSB Descriptor kustom kita
     pico_enable_stdio_usb(ht306_rp2350_zero 0)
     pico_enable_stdio_uart(ht306_rp2350_zero 0)
@@ -76,11 +80,20 @@ else()
         tests/test_lossless_codec.c
         src/lossless_codec.c
         src/i2s_engine.c
+        src/usb_descriptors.c
     )
 
     target_include_directories(test_lossless_codec PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/include
     )
+
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test_lossless_codec PRIVATE -Wall -Wextra)
+    endif()
+
+    if(NOT MSVC)
+        target_link_libraries(test_lossless_codec PRIVATE m)
+    endif()
 
     add_test(NAME VerifyLossless96kBitPerfect COMMAND test_lossless_codec)
 endif()

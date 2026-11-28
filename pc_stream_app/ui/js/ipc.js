@@ -42,12 +42,11 @@
   };
 
   /**
-   * Helper to send configuration updates to both Native Host and Browser Fallback REST API.
+   * Helper to send configuration updates to Browser Fallback REST API when not running inside WebView2.
    * @param {Object} payload - Configuration key-value changes
    * @returns {Promise<any>}
    */
   window.sendConfigUpdate = function (payload) {
-    window.sendNativeCommand("update_config", payload);
     if (!isNativeWebView2 && window.location.protocol.startsWith("http")) {
       return fetch("/api/config", {
         method: "POST",
@@ -70,6 +69,5 @@
       }
     });
     console.log("[HT306 IPC] Native WebView2 Bridge registered successfully.");
-    window.sendNativeCommand("app_ready", { version: "1.3.0" });
   }
 })();

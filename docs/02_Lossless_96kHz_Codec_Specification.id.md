@@ -14,7 +14,7 @@ Antarmuka USB bawaan pada mikrokontroler `RP2350` / `RP2040` bekerja pada standa
 * **Mode `48 kHz / 24-bit 5.1` (Mentah):** `48.000 × 6 × 3 Byte = 864 KB/detik` *(Muat di kabel USB Full-Speed)*.
 * **Mode `96 kHz / 24-bit 5.1` (Mentah):** `96.000 × 6 × 3 Byte = 1.728 KB/detik` *(Melebihi batas fisik USB Full-Speed sebesar 72%)*.
 
-Dengan algoritma **Single-Pass FLAC Order-4 Linear Predictor + Escaped Golomb-Rice**, aliran `1.728,0 KB/detik` dipadatkan menjadi rata-rata **`716,1 KB/detik` (`41,4%`)** dengan **kemurnian matematis 100% (`0 bit error`)** dan waktu buka kompresi `< 0,03 milidetik` di `Core 1` `RP2350-Zero`.
+Dengan algoritma **Adaptive Linear Predictor (`Order-4 / 1 / 2 / 0`) + Wasted-Bits Removal + Escaped Golomb-Rice**, aliran `1.728,0 KB/detik` dipadatkan menjadi rata-rata **`716,1 KB/detik` (`41,4%`)** dengan **kemurnian matematis 100% (`0 bit error`)** dan waktu buka kompresi `< 0,03 milidetik` di `Core 1` `RP2350-Zero`. Untuk menjaga stabilitas pada host dengan *USB 2.0 Transaction Translator* (TT), aplikasi PC juga menerapkan *Unified Safe USB 1.1 TT Bandwidth Guard* (`<= 680 KiB/s`: `<= 348 B/paket @ 96 kHz` dan `<= 696 B/paket @ 48 kHz`) melalui *dynamic right-shift* terkendali.
 
 ---
 
@@ -26,17 +26,20 @@ Setiap paket mengemas tepat **48 frame waktu** (`0,5 milidetik` pada `96 kHz`, a
 
 ---
 
-## 2.3. Prediktor Linear Orde-4 Bergaya FLAC (*Single-Pass*)
+## 2.3. Prediktor Linear Adaptif Per-Kanal (`Order-4 / 1 / 2 / 0`) & *Wasted-Bits*
 
-Untuk indeks sampel $n \in \lbrace 1, \dots, 47 \rbrace$ pada setiap channel $c \in \lbrace 0, \dots, 5 \rbrace$, prediktor menghitung estimasi nilai sampel menggunakan polinomial beda hingga (*finite-difference*) orde-4:
-
-* **Sampel Transisi Awal** ($n = 1, 2, 3$):
-  * $n = 1 \implies \hat{x}_c[1] = x_c[0]$
-  * $n = 2 \implies \hat{x}_c[2] = 2x_c[1] - x_c[0]$
-  * $n = 3 \implies \hat{x}_c[3] = 3x_c[2] - 3x_c[1] + x_c[0]$
-* **Sampel Kondisi Tunak Orde-4** ($n \ge 4$):
+Untuk indeks sampel $n \in \lbrace 1, \dots, 47 \rbrace$ pada setiap channel $c \in \lbrace 0, \dots, 5 \rbrace$, encoder mengevaluasi 4 kandidat prediktor dan memilih biaya bit terkecil per kanal (`pred_code` disimpan pada bit `[6:5]` dari `rice_k[c]`):
+* `pred_code = 0` (**Order-4**, default *backward-compatible*):
+  * Transisi awal: $n = 1 \implies x_c[0]$, $n = 2 \implies 2x_c[1] - x_c[0]$, $n = 3 \implies 3x_c[2] - 3x_c[1] + x_c[0]$
+  * Kondisi tunak ($n \ge 4$):
 
 $$\hat{x}_c[n] = 4x_c[n-1] - 6x_c[n-2] + 4x_c[n-3] - x_c[n-4]$$
+
+* `pred_code = 1` (**Order-1**): $\hat{x}_c[n] = x_c[n-1]$
+* `pred_code = 2` (**Order-2**): $\hat{x}_c[n] = 2x_c[n-1] - x_c[n-2]$ ($x_c[0]$ pada $n=1$)
+* `pred_code = 3` (**Order-0**): $\hat{x}_c[n] = 0$ (ideal untuk sinyal frekuensi tinggi padat)
+
+Jika seluruh sampel 24-bit dalam subframe memiliki 8 bit LSB nol (*16-in-24*, misal sumber 16-bit), encoder otomatis mengaktifkan **`shift_code = 4`** (`shift_bits = 8`, 100% *bit-exact*), dan menggunakan *verbatim* 2-byte (`<= 590 B`) saat fallback mentah.
 
 Nilai selisih (*residual*) dihitung dalam aritmetika komplemen-2 24-bit:
 
@@ -89,9 +92,9 @@ $$e_c[n] = \mathrm{sext}_{24}\left(x_c[n] - \hat{x}_c[n]\right)$$
 | **`0..1`** | `sync_word` | `uint16_t` | Penanda awal paket (`0xA55A`, Little-Endian: `0x5A, 0xA5`). |
 | **`2..3`** | `packet_len` | `uint16_t` | Panjang total paket dalam byte (`header + payload`) untuk penyatuan potongan 64-byte USB Bulk. |
 | **`4`** | `sequence` | `uint8_t` | Nomor urut paket (`0..255`) untuk deteksi *packet drop*. |
-| **`5`** | `flags` | `uint8_t` | Bit `0`: `HT306_FLAG_RATE_96KHZ` (`1` = `96 kHz`, `0` = `48 kHz`), Bit `1`: `HT306_FLAG_BITDEPTH_24`, Bit `2`: `HT306_FLAG_CHANNELS_8`, Bit `3`: `HT306_FLAG_BITDEPTH_32` (Mode 32-bit Studio Master), Bit `[7:4]`: `HT306_FLAG_SHIFT_MASK`. |
+| **`5`** | `flags` | `uint8_t` | Bit `0`: `HT306_FLAG_RATE_96KHZ` (`1` = `96 kHz`, `0` = `48 kHz`), Bit `1`: `HT306_FLAG_BITDEPTH_24` (transport PC `24-bit`, maks `812 B` / verbatim `878 B`), Bit `2`: `HT306_FLAG_CHANNELS_8` (ditolak decoder), Bit `3`: `HT306_FLAG_BITDEPTH_32`, Bit `4`: `HT306_FLAG_VERBATIM_RAW` (*auto fallback* 3B/2B), Bit `5..7`: `HT306_FLAG_SHIFT_MASK` (`shift_bits = shift_code × 2`, 16-in-24 *wasted-bits* / *dynamic shift*). |
 | **`6`** | `num_frames` | `uint8_t` | Jumlah sampel per channel dalam paket (default: `48`). |
-| **`7..12`** | `rice_k[6]` | `uint8_t[6]` | Parameter Golomb-Rice $k \in \lbrace 0, \dots, 22 \rbrace$ untuk masing-masing channel `0..5`. |
-| **`13`** | `payload_crc8` | `uint8_t` | Checksum `CRC-8` (polinomial `0x07`) yang dihitung atas seluruh byte `payload`. |
+| **`7..12`** | `rice_k[6]` | `uint8_t[6]` | Bit `0..4`: parameter Golomb-Rice $k \in \lbrace 0, \dots, 22 \rbrace$ (`30` pada 32-bit); Bit `5..6`: `pred_code` (`0`=O4, `1`=O1, `2`=O2, `3`=O0); Bit `7`: wajib `0`. |
+| **`13`** | `payload_crc8` | `uint8_t` | Checksum `CRC-8` (polinomial `0x07`, LUT `256 B`) yang dihitung atas **Header `[2..12]` + seluruh byte `payload`**. |
 | **`14..31`** | `anchor[6]` | `18 Byte` | Sampel pertama (`Frame 0`) mentah 24-bit signed untuk ke-6 channel (`6 × 3 Byte`). |
 | **`32..N`** | `bitstream` | Variabel | Aliran bit residual `Frame 1..47` yang dipadatkan dengan *Escaped Golomb-Rice*. |

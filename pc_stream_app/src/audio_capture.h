@@ -33,11 +33,19 @@ private:
     static AudioStreamFormat ParseWaveFormat(const WAVEFORMATEX* pwfx);
 
     void NormalizeChannelsTo6Ch(
-        const float* src6,
+        const float src8[8],
         float dst6[6],
         uint16_t in_channels,
-        bool bit_perfect
+        uint32_t channel_mask,
+        float downmix_lin,
+        const AudioDspSettings& settings
     ) const;
+
+    void FlushUsbBatch(
+        std::vector<uint8_t>& usb_batch,
+        uint32_t& usb_batch_packets,
+        uint32_t output_rate
+    );
 
     void EmitProcessedFrames6Ch(
         const float* frames_6ch,
@@ -45,9 +53,13 @@ private:
         uint32_t output_rate,
         bool is_sweep,
         bool allow_silence_gate,
+        const AudioDspSettings& settings,
         std::vector<int32_t>& pcm6ch_block,
         int& frame_in_block,
-        std::vector<uint8_t>& usb_packet
+        std::vector<uint8_t>& usb_packet,
+        std::vector<uint8_t>& usb_batch,
+        uint32_t& usb_batch_packets,
+        ULONGLONG& last_meter_update_tick
     );
 
     void PumpSweepIfActive(
@@ -56,9 +68,13 @@ private:
         uint32_t sweep_rate,
         std::vector<int32_t>& pcm6ch_block,
         int& frame_in_block,
-        std::vector<uint8_t>& usb_packet
+        std::vector<uint8_t>& usb_packet,
+        std::vector<uint8_t>& usb_batch,
+        uint32_t& usb_batch_packets,
+        ULONGLONG& last_meter_update_tick
     );
 
+    bool WaitStopMs(DWORD ms) const;
     void LogThrottled(LogLevel level, const std::string& key, const std::string& msg);
 
     float GenerateTestSample(uint32_t mix_rate, float amp);
@@ -81,10 +97,9 @@ private:
     std::vector<float> m_in_frames_6ch;
     std::vector<float> m_resampled_6ch;
 
-    // Packet pacing & silence gate state
+    // Silence gate & status logging state
     float m_current_block_peak = 0.0f;
     uint32_t m_silent_blocks_streak = 0;
-    uint32_t m_burst_packets_sent = 0;
     std::string m_last_status_key;
 
     // Test tone & acoustic sweep generator states
