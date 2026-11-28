@@ -20,8 +20,8 @@ flowchart TB
         VDEV["Virtual Audio Sink\nVB-CABLE ('LG HT306 Home Theater')\n48 kHz / 96 kHz Multichannel 5.1"]
         APM["AudioPolicyManager & AudioEndpointHelper\nAuto-Switch Default Endpoint + Sync Nama"]
         CAP["AudioCapture (WASAPI Event-Driven Loopback)\nSmoothed Gain + Soft Limiter + Test/Sweep"]
-        ENC["Lossless Encoder (lossless_codec.c)\nFLAC Order-4 Delta + Golomb-Rice\nFrame 48 sampel + Sync 0xA55A + CRC-8"]
-        USBTX["UsbTransport (WinUSB & CDC ACM)\nVID 0x2E8A : PID 0x4306\nBulk Pipe EP 0x03 OUT + Serial Monitor"]
+        ENC["Lossless Encoder (lossless_codec.c)\nAdaptive Order 0/1/2/4 + Wasted-Bits + Rice\nFrame 48 sampel + Sync 0xA55A + CRC-8"]
+        USBTX["UsbTransport (4-Slot Async WinUSB & CDC)\nVID 0x2E8A : PID 0x4306 | Batch 4096 B\nBulk Pipe EP 0x03 OUT + Guard <= 680 KiB/s"]
         WEBUI["Desktop Dashboard (main_webview.cpp)\nWebView2 SPA + System Tray + VU Meter"]
 
         APPS --> VDEV --> CAP --> ENC --> USBTX
@@ -32,12 +32,12 @@ flowchart TB
     subgraph MCU["2. WAVESHARE RP2350-ZERO (Cortex-M33 @ 150 MHz — 3.3V VBUS PC)"]
         direction LR
         TUSB["TinyUSB Stack\nEP 0x03 Vendor Bulk\nEP 0x82 CDC Serial"]
-        REASM["Core 0: ht306_usb_task()\n64-Byte Stream Reassembler\n& LED/VU Heartbeat"]
-        Q1["SPSC Queue 1\ng_packet_queue[32]\n__dmb() Lock-Free"]
+        REASM["Core 0: ht306_usb_task()\nTinyUSB 8192B RX FIFO (Read <= 256B)\n& LED/VU Heartbeat (U/O/Q)"]
+        Q1["SPSC Queue 1\ng_packet_queue[64]\n__dmb() Lock-Free"]
         UNPK["Core 1: ht306_core1_lossless_worker()\nLossless Decode < 0.03 ms\n+ 4-Lane Nibble Interleaver"]
-        Q2["SPSC Ring Buffer 2\ng_pio_ring_buffer[32 blok]\n48 frame/blok (16 ms @ 96k)"]
-        DMA["Chained Ping-Pong DMA (A <-> B)\ng_silence_block Fallback Saat Underrun\nPLL Drift Tracking +/-0.02%"]
-        PIO["PIO0_SM0 (i2s_multi.pio)\nOutput Falling-Edge BCK\nGP2..GP6 (4mA Drive Strength)"]
+        Q2["SPSC Ring Buffer 2\ng_pio_ring_buffer[64 blok]\n48 frame/blok (32 ms @ 96k, Prefill 32)"]
+        DMA["Chained Ping-Pong DMA (A <-> B)\ng_silence_block Fallback Saat Underrun\nSchmitt-Trigger Hysteretic PLL (16..48 -> 32)"]
+        PIO["PIO0_SM0 (i2s_multi.pio)\nOutput Falling-Edge BCK\nGP2..GP6 (8mA Drive Strength)"]
 
         TUSB --> REASM --> Q1 --> UNPK --> Q2 --> DMA --> PIO
         REASM -.->|"VU & Stats"| TUSB
@@ -101,8 +101,8 @@ flowchart LR
     subgraph RP["Injeksi RP2350-Zero (+ Buffer/33R)"]
         G2["GP2 (LRCK) -> 33R"]
         G3["GP3 (BCK) -> 33R"]
-        G4["GP4 (ADATA0 FL/FR) -> 33R"]
-        G5["GP5 (ADATA1 SL/SR) -> 33R"]
+        G4["GP4 (ADATA0 SL/FR) -> 33R"]
+        G5["GP5 (ADATA1 FL/SR) -> 33R"]
         G6["GP6 (ADATA2 C/LFE) -> 33R"]
         G7["GP7 (ADATA3 7.1) — TIDAK DISAMBUNG"]
     end
@@ -227,8 +227,8 @@ stateDiagram-v2
 | :--- | :---: | :---: | :--- | :---: | :--- |
 | **`I2S_LRCK`** | `GP2` | `33 Ω` seri | **`R647`** (`47 Ω`) | `TP608` | **Pin 5** (`SLRCK`) |
 | **`I2S_BCK`** | `GP3` | `33 Ω` seri | **`R648`** (`47 Ω`) | `TP609` | **Pin 4** (`SBCK`) |
-| **`I2S_ADATA0`** (`FL/FR`) | `GP4` | `33 Ω` seri | **`R631`** (`100 Ω`) | `TP610` | **Pin 6** (`SSDIN0`) |
-| **`I2S_ADATA1`** (`SL/SR`) | `GP5` | `33 Ω` seri | **`R632`** (`100 Ω`) | `TP611` | **Pin 7** (`SSDIN1`) |
+| **`I2S_ADATA0`** (`SL/FR`) | `GP4` | `33 Ω` seri | **`R631`** (`100 Ω`) | `TP610` | **Pin 6** (`SSDIN0`) |
+| **`I2S_ADATA1`** (`FL/SR`) | `GP5` | `33 Ω` seri | **`R632`** (`100 Ω`) | `TP611` | **Pin 7** (`SSDIN1`) |
 | **`I2S_ADATA2`** (`C/LFE`) | `GP6` | `33 Ω` seri | **`R633`** (`100 Ω`) | `TP612` | **Pin 8** (`SSDIN2`) |
 | **Sense `VCC33` *(Opsi B)*** | `GP10` | `10 kΩ` seri + `100 kΩ` ke `GND` | *(Tidak mengangkat resistor)* | — | Kaki **`+` `C146`** / **`IC102` Pin 2** (`3.28V` ON / `0V` Standby) |
 | **`MUX_SELECT` *(Opsi Dual-Mode)*** | `GP8` | Pull-down `10 kΩ` ke `GND` | *(Pakai 2× `74LVC157`, catu `VCC33`)* | — | Pin `Select` kedua IC `74LVC157` |

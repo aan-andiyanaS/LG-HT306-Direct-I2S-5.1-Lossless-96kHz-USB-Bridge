@@ -12,7 +12,7 @@ Dokumen ini menjelaskan cara kerja generator sinyal I2S multi-lane pada [`firmwa
 
 Berbeda dengan DAC stereo biasa yang hanya memiliki 1 jalur data, chip **`Pulsus PS9850` (`IC602`)** menerima **3 jalur data I2S paralel (`ADATA0`, `ADATA1`, `ADATA2`)** yang berbagi satu **`BCK`** dan satu **`LRCK`**.
 
-Di dalam [`i2s_multi.pio`](../firmware/src/i2s_multi.pio), satu *State Machine* (`PIO0_SM0`) mengeluarkan keempat jalur data (`GP4..GP7`) secara serentak menggunakan instruksi `out pins, 4` dengan *side-set* 2-bit untuk `BCK` (`GP2`) dan `LRCK` (`GP3`):
+Di dalam [`i2s_multi.pio`](../firmware/src/i2s_multi.pio), satu *State Machine* (`PIO0_SM0`, drive strength **`8 mA`** pada `GP2..GP7`) mengeluarkan keempat jalur data (`GP4..GP7`) secara serentak menggunakan instruksi `out pins, 4` dengan *side-set* 2-bit untuk `LRCK` (`GP2`) dan `BCK` (`GP3`):
 
 ```mermaid
 sequenceDiagram
@@ -23,13 +23,13 @@ sequenceDiagram
     participant PS as IC602 (Pulsus PS9850)
 
     Note over DMA,PS: Setiap 1 Frame Waktu (1/Fs) = 128 Siklus PIO (64 Siklus BCK @ 50% Duty Cycle)
-    DMA->>OSR: Kirim 4x Word 32-bit (Sub-frame Kiri: FL, SL, C, BL)
+    DMA->>OSR: Kirim 4x Word 32-bit (Sub-frame Kiri: SL, FL, C, 0)
     loop 32 Bit Kiri (MSB ke LSB)
         OSR->>DATA: out pins, 4 (Set GP4..GP7 serentak)
         BCK->>PS: side 0b00 (Falling Edge BCK — Data Stabil)
         BCK->>PS: side 0b10 (Rising Edge BCK — PS9850 Mencuplik Bit!)
     end
-    DMA->>OSR: Kirim 4x Word 32-bit (Sub-frame Kanan: FR, SR, LFE, BR)
+    DMA->>OSR: Kirim 4x Word 32-bit (Sub-frame Kanan: FR, SR, LFE, 0)
     loop 32 Bit Kanan (MSB ke LSB)
         OSR->>DATA: out pins, 4 (Set GP4..GP7 serentak)
         BCK->>PS: side 0b01 (Falling Edge BCK — Data Stabil)
@@ -49,10 +49,10 @@ sequenceDiagram
 
 Karena instruksi `out pins, 4` menggeser 4 bit sekaligus dari *Output Shift Register* (`OSR`) menuju pin `GP4..GP7` pada setiap siklus `BCK`, fungsi `ht306_interleave_4lanes_to_pio_words()` di [`i2s_engine.c`](../firmware/src/i2s_engine.c) menyusun setiap bit ke-$b \in \lbrace 31, \dots, 0 \rbrace$ dari 4 kanal ke dalam satu *nibble* 4-bit:
 
-* **Bit 0 (`GP4` - `ADATA0`):** `Front Left` (saat `LRCK=0`) / `Front Right` (saat `LRCK=1`)
-* **Bit 1 (`GP5` - `ADATA1`):** `Surround Left` (saat `LRCK=0`) / `Surround Right` (saat `LRCK=1`)
-* **Bit 2 (`GP6` - `ADATA2`):** `Center` (saat `LRCK=0`) / `Subwoofer LFE` (saat `LRCK=1`)
-* **Bit 3 (`GP7` - `ADATA3`):** `Back Left` (saat `LRCK=0`) / `Back Right` (saat `LRCK=1`)
+* **Bit 0 (`GP4` - `ADATA0`):** `Surround Left (SL)` (saat `LRCK=0`) / `Front Right (FR)` (saat `LRCK=1`)
+* **Bit 1 (`GP5` - `ADATA1`):** `Front Left (FL)` (saat `LRCK=0`) / `Surround Right (SR)` (saat `LRCK=1`)
+* **Bit 2 (`GP6` - `ADATA2`):** `Center (C)` (saat `LRCK=0`) / `Subwoofer (LFE)` (saat `LRCK=1`)
+* **Bit 3 (`GP7` - `ADATA3`):** `0` (Cadangan 7.1 `Back Left` / `Back Right`)
 
 Setiap 1 waktu cuplik ($1/F_s$) menghasilkan **8 word 32-bit (`32 Byte`)** di dalam *Ring Buffer* DMA (4 word untuk sub-frame Kiri + 4 word untuk sub-frame Kanan).
 
@@ -65,27 +65,27 @@ Untuk menjamin aliran audio bebas *glitch* tanpa pernah mematikkan interupsi glo
 ```mermaid
 flowchart LR
     subgraph CORE0["Core 0 (USB & Control)"]
-        USB_TASK["ht306_usb_task()\n(TinyUSB Bulk Polling)"]
-        REASM["ht306_usb_process_vendor_stream()\n(64-Byte Reassembler)"]
+        USB_TASK["ht306_usb_task()\n(TinyUSB 8192B RX FIFO, Read <=256B)"]
+        REASM["ht306_usb_process_vendor_stream()\n(Bulk memcpy Reassembler)"]
         USB_TASK --> REASM
     end
 
     subgraph SPSC1["Wait-Free Queue 1"]
-        PKT_Q["g_packet_queue[32]\ng_pkt_write_count / g_pkt_read_count\n+ __dmb()"]
+        PKT_Q["g_packet_queue[64]\ng_pkt_write_count / g_pkt_read_count\n+ __dmb()"]
     end
 
     subgraph CORE1["Core 1 (Dedicated Unpacker in SRAM)"]
-        DEC["ht306_lossless_decode_frame_ex()\n(LUT CRC-8 256 B + Verbatim)"]
+        DEC["ht306_lossless_decode_frame_ex()\n(LUT CRC-8 256 B + Adaptive/Verbatim)"]
         INT["ht306_i2s_write_frames_6ch()\n(4-Lane LUT 1.024 B)"]
         DEC --> INT
     end
 
     subgraph SPSC2["Wait-Free Queue 2"]
-        PIO_RB["g_pio_ring_buffer[32 Blocks]\ng_write_blocks / g_dma_queued_blocks / g_read_blocks\n+ g_ring_block_rate[32] + __dmb()"]
+        PIO_RB["g_pio_ring_buffer[64 Blocks]\ng_write_blocks / g_dma_queued_blocks / g_read_blocks\n+ g_ring_block_rate[64] + Prefill 32 + __dmb()"]
     end
 
     subgraph HW_DMA["DMA & PIO0 Hardware"]
-        DMA_AB["Chained DMA Channel A <-> B\n(ht306_dma_irq_handler + Soft-Ramp)"]
+        DMA_AB["Chained DMA Channel A <-> B\n(ht306_dma_irq_handler + Hysteretic PLL + Soft-Ramp)"]
         SIL["g_silence_block (Zero Fallback)"]
         PIO_SM["PIO0_SM0 (GP2..GP7) | PIO1 (WS2812 GP16)"]
         DMA_AB --> PIO_SM
@@ -100,5 +100,5 @@ flowchart LR
    * Baik antrian paket (`Core 0` $\rightarrow$ `Core 1`) maupun *Ring Buffer* I2S (`Core 1` $\rightarrow$ `DMA_IRQ_0`) menggunakan *counter* monotonik terpisah (`write_count` hanya ditulis oleh *Producer*, `read_count` hanya ditulis oleh *Consumer*) yang dipadukan dengan instruksi *Data Memory Barrier* (`__dmb()`).
 2. **Keamanan Stack Core 1 (`Static SRAM Allocation`):**
    * Seluruh buffer dekode (`g_core1_decoded_i2s32`) dialokasikan secara statis di SRAM global, sehingga stack `Core 1` (`2 KB`) tetap aman dari *stack overflow*.
-3. **Chained Ping-Pong DMA + *Zero-Silence Fallback*:**
-   * Dua kanal DMA (`g_dma_chan_a` dan `g_dma_chan_b`) saling memicu (*chain-to*) secara otomatis di tingkat hardware tanpa jeda siklus clock. Jika aliran USB dari PC berhenti, ISR DMA otomatis mengarahkan pembacaan ke `g_silence_block` (berisi nol) agar speaker tidak mengeluarkan bunyi *buzz/pop*.
+3. **Chained Ping-Pong DMA + *Hysteretic PLL* + *Zero-Silence Fallback*:**
+   * Dua kanal DMA (`g_dma_chan_a` dan `g_dma_chan_b`) saling memicu (*chain-to*) secara otomatis di tingkat hardware tanpa jeda siklus clock, dengan *pre-fill* **32 blok** (`16 ms @ 96 kHz` / `32 ms @ 48 kHz`) di tengah *ring buffer* 64-blok serta kontrol PLL *Schmitt-trigger* berhisteresis (`< 16` lambat / `> 48` cepat $\rightarrow$ kembali nominal di `32`). Log CDC `[VU 5.1]` melaporkan `U:` (underrun), `O:` (overrun), dan `Q:` (blok tersimpan). Jika aliran USB dari PC berhenti, ISR DMA otomatis mengarahkan pembacaan ke `g_silence_block` (berisi nol) agar speaker tidak mengeluarkan bunyi *buzz/pop*.

@@ -29,8 +29,8 @@ flowchart LR
     subgraph MT["IC501: MediaTek MT1389MH"]
         O1["Pin ABCK"]
         O2["Pin ALRCK"]
-        O3["Pin ADATA0 (FL/FR)"]
-        O4["Pin ADATA1 (SL/SR)"]
+        O3["Pin ADATA0 (SL/FR)"]
+        O4["Pin ADATA1 (FL/SR)"]
         O5["Pin ADATA2 (C/Sub)"]
         I2C_M["Pin SDA & SCL (I2C)"]
     end
@@ -112,7 +112,7 @@ flowchart TD
    * Saat Anda memilih mode `AUX` dan menyalakan settingan *2 to 5.1*, chip `MT1389MH` memang mencoba mengolah input analog RCA (yang kosong) menjadi 6 channel pada kaki output I2S-nya.
    * **Namun karena ke-5 resistor seri I2S dari `MT1389MH` sudah diangkat**, sinyal *upmix* dari `MT1389MH` tersebut **berhenti di kaki resistor yang terangkat dan terbuang sepenuhnya**.
 2. **`Pulsus PS9850` (`IC602`) Bekerja Secara *1-to-1 Discrete 6-Channel*:**
-   * Chip `Pulsus PS9850` **tidak memiliki pencampur Pro Logic II**. Kaki inputnya (`SDATA0`, `SDATA1`, `SDATA2`) selalu meneruskan 6 kanal diskrit dari `RP2350-Zero` secara murni (`FL/FR`, `SL/SR`, `C/Sub`) melewati **69-Band Hardware Biquad EQ** menuju penguat daya `TAS5352`.
+   * Chip `Pulsus PS9850` **tidak memiliki pencampur Pro Logic II**. Kaki inputnya (`SDATA0`, `SDATA1`, `SDATA2`) selalu meneruskan 6 kanal diskrit dari `RP2350-Zero` secara murni (`SL/FR`, `FL/SR`, `C/Sub`) melewati **69-Band Hardware Biquad EQ** menuju penguat daya `TAS5352`.
 
 ### Efek Tiap Mode EQ / Sound Mode di Remote LG Saat Posisi `AUX`
 
@@ -146,7 +146,7 @@ Metode injeksi langsung tanpa IC buffer `SN74LVC244A` dapat dilakukan secara ama
 ### 1.4.2. Mengapa Urutan Daya (*Power Sequencing*) Tidak Boleh Terbalik?
 Pada arsitektur firmware RP2350 ([main.c](file:///e:/Project/HomeTheather/firmware/src/main.c#L154-L155) & [i2s_engine.c](file:///e:/Project/HomeTheather/firmware/src/i2s_engine.c#L257-L260)):
 * Begitu kabel USB Type-C dicolokkan ke PC, mesin `PIO0_SM0` **langsung aktif bekerja**.
-* Meskipun PC sedang hening / tidak memutar musik (mengirim `g_silence_block`), pin **`GP2` (`BCK`, 6,144 MHz)** dan **`GP3` (`LRCK`, 96 kHz)** tetap memancarkan pulsa gelombang kotak aktif bertegangan `0 V ↔ 3,3 V` secara terus-menerus.
+* Meskipun PC sedang hening / tidak memutar musik (mengirim `g_silence_block`), pin **`GP2` (`LRCK`, 96 kHz)** dan **`GP3` (`BCK`, 6,144 MHz)** tetap memancarkan pulsa gelombang kotak aktif bertegangan `0 V ↔ 3,3 V` secara terus-menerus.
 * Apabila HT306 berada dalam status mati atau *Standby* (`VCC33 = 0 V`), pulsa tegangan `3,3 V` dari `GP2/GP3` akan mengalir melewati dioda proteksi ESD internal pada kaki input `IC602 (Pulsus PS9850)` menuju rel catu `VCC33` (*parasitic back-powering*). Hal ini dapat menyebabkan chip bekerja di luar batas spesifikasi (*partial power stress*).
 
 ### 1.4.3. Tabel Urutan Setup Uji Coba Manual yang Wajib Dipatuhi

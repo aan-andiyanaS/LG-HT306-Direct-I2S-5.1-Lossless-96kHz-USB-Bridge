@@ -6,7 +6,11 @@
 [![Platform: RP2350-Zero](https://img.shields.io/badge/MCU-Waveshare%20RP2350--Zero-purple.svg)](https://www.waveshare.com/rp2350-zero.htm)
 [![Audio: 96kHz 24-bit 5.1](https://img.shields.io/badge/Audio-96kHz%20%2F%2024--bit%205.1%20Bit--Perfect-success.svg)](docs/02_Lossless_96kHz_Codec_Specification.md)
 [![Target DSP: Pulsus PS9850](https://img.shields.io/badge/DSP-Pulsus%20PS9850%20(IC602)-orange.svg)](docs/01_Hardware_Architecture_and_Mod_Guide.md)
+[![Hardware: LG HT306 Verified](https://img.shields.io/badge/Hardware-LG%20HT306%20Verified%20(6--Ch%2048%2F96kHz)-2ea44f.svg)](docs/07_Complete_Architecture_and_Topology.md)
 [![Tests: 100% Passing](https://img.shields.io/badge/Verification-100%25%20Bit--Exact-brightgreen.svg)](docs/04_Build_Flash_and_JRiver_Setup.md)
+
+> [!TIP]
+> **Hardware Integration Verified (`v1.0.0-ht306-integrated`):** Live bench integration on an actual **LG HT306 (`EAX63554302`)** mainboard (`IC602 Pulsus PS9850`) succeeded with all **6 discrete speakers (`FL, FR, C, LFE, SL, SR`) verified 100% accurate** over Direct-I2S (`48 kHz` / `96 kHz`), asynchronous 4-slot WinUSB, adaptive codec, and hysteretic PLL.
 
 **A high-performance Multichannel Digital Audio Bridge (*Direct-to-PWM Processor*) powered by `Waveshare RP2350-Zero` to transform legacy LG HT306 DVD Home Theaters (`HT306SU` / `HT306SF` / `HT306PD`) into a pure digital 5.1/7.1 Surround sound system streaming up to `96 kHz / 24-bit Lossless` from PC (JRiver Media Center) — while preserving 100% of LG's stock Hardware EQ features.**
 
@@ -18,7 +22,7 @@ The **LG HT306** Home Theater system features a potent **`330W RMS`** *Full-Digi
 
 This project bypasses that analog bottleneck entirely by injecting **6-Channel Digital I2S (`BCK`, `LRCK`, `ADATA0..2`)** directly from the PC into the digital input pins of **`IC602 (Pulsus PS9850)`** using a **`Waveshare RP2350-Zero`**:
 * **100% Pure Digital (*Bit-Perfect*):** Completely free from noisy DAC/ADC analog roundtrips.
-* **Overcoming USB 1.1 Full-Speed Limits for `96 kHz / 24-bit 5.1`:** Compresses the raw `1,728.0 KB/s` stream down to an average of **`716.1 KB/s` (`41.4%`)** using an ultra-low latency *Real-Time Lossless FLAC Order-4 + Escaped Golomb-Rice Codec* (`0 bit error`, `< 0.03 ms` unpacking latency on `Core 1`).
+* **Overcoming USB 1.1 Full-Speed Limits for `96 kHz / 24-bit 5.1`:** Compresses the raw `1,728.0 KB/s` stream down to an average of **`716.1 KB/s` (`41.4%`)** using an ultra-low latency *Real-Time Lossless Adaptive Order 0/1/2/4 + Wasted-Bits & Escaped Golomb-Rice Codec* (`0 bit error`, `< 0.03 ms` unpacking latency on `Core 1`).
 * **Preserving Stock LG Hardware EQ:** The original **`I2C` (`SDA`/`SCL`)** control lines from the master DVD SoC (**`MediaTek MT1389MH` / `IC501`**) are kept intact so that all **69-Band Hardware Biquad EQ** presets (*Bass Blast, Natural, Pop, Classic, Master Volume*) remain fully controllable via the original LG remote control.
 
 ---
@@ -76,8 +80,8 @@ flowchart TB
 | :---: | :--- | :--- | :--- |
 | **`GP2`** | `I2S_LRCK` | Word Select (`Fs`) | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `LRCK` resistor (towards `IC602`) |
 | **`GP3`** | `I2S_BCK` | Bit Clock (`64 × Fs`) | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `BCK` resistor (towards `IC602`) |
-| **`GP4`** | `I2S_ADATA0` | **Front L & Front R** | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA0` resistor (towards `IC602`) |
-| **`GP5`** | `I2S_ADATA1` | **Surround L & Surround R** | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA1` resistor (towards `IC602`) |
+| **`GP4`** | `I2S_ADATA0` | **Surround L & Front R** | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA0` resistor (towards `IC602`) |
+| **`GP5`** | `I2S_ADATA1` | **Front L & Surround R** | Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA1` resistor (towards `IC602`) |
 | **`GP6`** | `I2S_ADATA2` | **Center & Subwoofer (LFE)**| Via `33 Ω` Resistor $\rightarrow$ Pad of lifted `ADATA2` resistor (towards `IC602`) |
 | **`GP7` / `GP8` / `GP9`** | Expansion | `ADATA3` (7.1) / `MUX` / `IR` | *(Optional)* 7.1 Expansion, `74LVC157` Switch, & LG Remote injection |
 | **`GND`** | `Ground` | Digital Reference (`3.3V`)| Digital **`GND`** point near `IC602` on HT306 mainboard |
@@ -105,7 +109,7 @@ Deep technical documentation has been organized into dedicated bilingual modules
 | Document | Detailed Contents |
 | :--- | :--- |
 | 📄 **[01_Hardware_Architecture_and_Mod_Guide.md](docs/01_Hardware_Architecture_and_Mod_Guide.md)**<br>*(ID: [Versi Bahasa Indonesia](docs/01_Hardware_Architecture_and_Mod_Guide.id.md))* | Detailed breakdown of LG HT306 ICs, anatomy of the **5 SMD series damping resistors** (*no trace cutting*), and why **`AUX` mode & `2 to 5.1 (PLII)` / Stock EQ** will never interfere with PC 5.1 audio. |
-| 📄 **[02_Lossless_96kHz_Codec_Specification.md](docs/02_Lossless_96kHz_Codec_Specification.md)**<br>*(ID: [Versi Bahasa Indonesia](docs/02_Lossless_96kHz_Codec_Specification.id.md))* | Mathematical equations for **Single-Pass FLAC Order-4 Predictor**, **ZigZag Mapping**, **Escaped Golomb-Rice**, and detailed specification of the **14-Byte Packet Header (`HT306_LosslessHeader_t`)**. |
+| 📄 **[02_Lossless_96kHz_Codec_Specification.md](docs/02_Lossless_96kHz_Codec_Specification.md)**<br>*(ID: [Versi Bahasa Indonesia](docs/02_Lossless_96kHz_Codec_Specification.id.md))* | Mathematical equations for **Adaptive Order 0/1/2/4 Predictor**, **Wasted-Bits Removal**, **ZigZag & Escaped Golomb-Rice**, and detailed specification of the **14-Byte Packet Header (`HT306_LosslessHeader_t`)**. |
 | 📄 **[03_PIO_4Lane_I2S_and_DualCore_DMA.md](docs/03_PIO_4Lane_I2S_and_DualCore_DMA.md)**<br>*(ID: [Versi Bahasa Indonesia](docs/03_PIO_4Lane_I2S_and_DualCore_DMA.id.md))* | Precision clock timing diagrams for **`i2s_multi.pio`** on *falling edge* `BCK`, the *4-Lane Nibble Bit-Interleaver*, and the **Wait-Free SPSC Chained Ping-Pong DMA** engine in SRAM. |
 | 📄 **[04_Build_Flash_and_JRiver_Setup.md](docs/04_Build_Flash_and_JRiver_Setup.md)**<br>*(ID: [Versi Bahasa Indonesia](docs/04_Build_Flash_and_JRiver_Setup.id.md))* | Step-by-step firmware build guide, `.uf2` flashing, benchmark test outputs, and **JRiver Media Center (`DSP Studio`)** configuration. |
 | 📄 **[05_PC_Audio_Bridge_PRD_and_Architecture.md](docs/05_PC_Audio_Bridge_PRD_and_Architecture.md)**<br>*(ID: [Versi Bahasa Indonesia](docs/05_PC_Audio_Bridge_PRD_and_Architecture.id.md))* | Product Requirements Document (PRD) and technical architecture for the **HT306 PC Audio Bridge Companion Application** on Windows 10/11. |

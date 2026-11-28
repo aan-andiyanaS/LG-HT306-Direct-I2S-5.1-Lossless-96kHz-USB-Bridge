@@ -63,7 +63,7 @@ flowchart TB
         direction TB
         RP_RX["Core 0: TinyUSB Receiver\nReassembles USB byte stream into packets\nUpdates status LED & CDC diagnostic monitor"]
         RP_DEC["Core 1: Lossless Unpacker (< 0.03 ms)\nReconstructs bit-exact 32-bit PCM 6-channel\nAdapts clock to 48 kHz or 96 kHz dynamically"]
-        RP_I2S["PIO0 Multi-Lane I2S & Chained DMA\nGenerates physical clock and data pulses\nGP2..GP6: BCK, LRCK, ADATA0..ADATA2"]
+        RP_I2S["PIO0 Multi-Lane I2S & Chained DMA\nGenerates physical clock and data pulses\nGP2..GP6: LRCK, BCK, ADATA0..ADATA2"]
         LG_AMP["LG HT306 Mainboard (AUX Mode)\nPulsus PS9850 Processor + TAS5352 Power Stage\nStock LG EQ presets & Remote control fully intact"]
         SPK["6 Physical Surround Speakers (5.1)\nFront L/R, Center, Subwoofer LFE, Surround L/R"]
 

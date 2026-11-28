@@ -35,8 +35,8 @@ flowchart TD
 
     subgraph BRIDGE["HT306 PC Audio Bridge Application (User Space)"]
         CAP["WASAPI Real-Time Loopback Capture Client\n(Event-Driven, Buffer < 3 ms, 48k/96k 24-bit PCM)"]
-        ENC["Real-Time FLAC Order-4 Delta-Rice Encoder\n(Subframe: 48 Samples / 0.5 ms, CRC-8 Checksum)"]
-        USB_TX["WinUSB High-Throughput Bulk Transmitter\n(Chunk: 64-Byte Segments, EP 0x03 OUT, Flow Control)"]
+        ENC["Real-Time Adaptive Delta-Rice Encoder\n(Order 0/1/2/4 + Wasted-Bits, 48 Samples, CRC-8)"]
+        USB_TX["WinUSB Async Bulk Transmitter (4-Slot Overlapped)\n(Batch: 10 Subframes / 4096 B, EP 0x03 OUT, <= 680 KiB/s)"]
         MON["Serial Diagnostic & Heartbeat Client\n(Reads COM4 CDC ACM, Real-time Watermark & Stats)"]
         UI["Status HUD / System Tray Interface\n(Sample Rate, Throughput, Volume, Buffer Health)"]
 

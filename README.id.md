@@ -6,7 +6,11 @@
 [![Platform: RP2350-Zero](https://img.shields.io/badge/MCU-Waveshare%20RP2350--Zero-purple.svg)](https://www.waveshare.com/rp2350-zero.htm)
 [![Audio: 96kHz 24-bit 5.1](https://img.shields.io/badge/Audio-96kHz%20%2F%2024--bit%205.1%20Bit--Perfect-success.svg)](docs/02_Lossless_96kHz_Codec_Specification.id.md)
 [![Target DSP: Pulsus PS9850](https://img.shields.io/badge/DSP-Pulsus%20PS9850%20(IC602)-orange.svg)](docs/01_Hardware_Architecture_and_Mod_Guide.id.md)
+[![Hardware: LG HT306 Verified](https://img.shields.io/badge/Hardware-LG%20HT306%20Terverifikasi%20(6--Ch%2048%2F96kHz)-2ea44f.svg)](docs/07_Complete_Architecture_and_Topology.id.md)
 [![Tests: 100% Passing](https://img.shields.io/badge/Verification-100%25%20Bit--Exact-brightgreen.svg)](docs/04_Build_Flash_and_JRiver_Setup.id.md)
+
+> [!TIP]
+> **Integrasi Hardware Terverifikasi (`v1.0.0-ht306-integrated`):** Pengujian fisik langsung pada mainboard **LG HT306 (`EAX63554302`)** (`IC602 Pulsus PS9850`) telah berhasil dengan **seluruh 6 speaker diskrit (`FL, FR, C, LFE, SL, SR`) terkonfirmasi akurat 100%** melalui Direct-I2S (`48 kHz` / `96 kHz`), WinUSB *asynchronous* 4-slot, codec adaptif, dan *hysteretic PLL*.
 
 **Jembatan Audio Digital Multichannel (*Direct-to-PWM Processor*) berbasis `Waveshare RP2350-Zero` untuk mengubah Home Theater DVD LG HT306 (`HT306SU` / `HT306SF` / `HT306PD`) menjadi sistem Surround 5.1/7.1 murni digital hingga `96 kHz / 24-bit Lossless` dari PC (JRiver Media Center) — sambil tetap mempertahankan 100% fitur Hardware EQ bawaan LG.**
 
@@ -18,7 +22,7 @@ Home Theater **LG HT306** memiliki penguat daya *Full-Digital Class-D* **`330W R
 
 Proyek ini memotong jalur analog tersebut dan menyuntikkan **6-Channel Digital I2S (`BCK`, `LRCK`, `ADATA0..2`)** secara langsung dari PC ke kaki input **`IC602 (Pulsus PS9850)`** menggunakan **`Waveshare RP2350-Zero`**:
 * **100% Murni Digital (*Bit-Perfect*):** Tanpa konversi DAC/ADC analog sedikit pun.
-* **Menembus Batas USB 1.1 Full-Speed untuk `96 kHz / 24-bit 5.1`:** Memadatkan aliran `1.728,0 KB/detik` menjadi **`716,1 KB/detik` (`41,4%`)** menggunakan algoritma *Real-Time Lossless FLAC Order-4 + Escaped Golomb-Rice* (`0 bit error`, latensi `< 0,03 ms` di `Core 1`).
+* **Menembus Batas USB 1.1 Full-Speed untuk `96 kHz / 24-bit 5.1`:** Memadatkan aliran `1.728,0 KB/detik` menjadi **`716,1 KB/detik` (`41,4%`)** menggunakan algoritma *Real-Time Lossless Adaptive Order 0/1/2/4 + Wasted-Bits & Escaped Golomb-Rice* (`0 bit error`, latensi `< 0,03 ms` di `Core 1`).
 * **EQ Bawaan LG HT306 Tetap Aktif:** Jalur kontrol **`I2C` (`SDA`/`SCL`)** dari chip utama **`MediaTek MT1389MH` (`IC501`)** dibiarkan utuh sehingga seluruh preset **69-Band Hardware EQ** (*Bass Blast, Natural, Pop, Classic, Volume*) tetap berfungsi lewat remote asli LG.
 
 ---
@@ -76,8 +80,8 @@ flowchart TB
 | :---: | :--- | :--- | :--- |
 | **`GP2`** | `I2S_LRCK` | Word Select (`Fs`) | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `LRCK` (arah `IC602`) |
 | **`GP3`** | `I2S_BCK` | Bit Clock (`64 × Fs`) | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `BCK` (arah `IC602`) |
-| **`GP4`** | `I2S_ADATA0` | **Front L & Front R** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA0` (arah `IC602`) |
-| **`GP5`** | `I2S_ADATA1` | **Surround L & Surround R** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA1` (arah `IC602`) |
+| **`GP4`** | `I2S_ADATA0` | **Surround L & Front R** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA0` (arah `IC602`) |
+| **`GP5`** | `I2S_ADATA1` | **Front L & Surround R** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA1` (arah `IC602`) |
 | **`GP6`** | `I2S_ADATA2` | **Center & Subwoofer (LFE)** | Via Resistor `33 Ω` $\rightarrow$ Pad Resistor `ADATA2` (arah `IC602`) |
 | **`GP7` / `GP8` / `GP9`** | Ekspansi | `ADATA3` (7.1) / `MUX` / `IR` | *(Opsional)* Ekspansi 7.1, Switch `74LVC157`, & Remote LG |
 | **`GND`** | `Ground` | Referensi Digital (`3.3V`) | Titik **`GND` Digital** di dekat `IC602` pada Mainboard HT306 |
@@ -105,7 +109,7 @@ Seluruh penjelasan teknis mendalam telah dipisahkan ke dalam modul bilingual ter
 | Dokumen | Isi Penjelasan Detail |
 | :--- | :--- |
 | 📄 **[01_Hardware_Architecture_and_Mod_Guide.id.md](docs/01_Hardware_Architecture_and_Mod_Guide.id.md)**<br>*(EN: [English Version](docs/01_Hardware_Architecture_and_Mod_Guide.md))* | Bedah chip mainboard LG HT306, anatomi **5 resistor seri SMD** (*no trace cutting*), serta alasan mengapa mode **`AUX`** & settingan **`2 to 5.1 (PLII)` / EQ Bawaan** tidak bentrok dengan sinyal 5.1 PC. |
-| 📄 **[02_Lossless_96kHz_Codec_Specification.id.md](docs/02_Lossless_96kHz_Codec_Specification.id.md)**<br>*(EN: [English Version](docs/02_Lossless_96kHz_Codec_Specification.md))* | Rumus matematis **Single-Pass FLAC Order-4 Linear Predictor**, **ZigZag Mapping**, **Escaped Golomb-Rice**, dan rincian **Header Paket 14-Byte (`HT306_LosslessHeader_t`)**. |
+| 📄 **[02_Lossless_96kHz_Codec_Specification.id.md](docs/02_Lossless_96kHz_Codec_Specification.id.md)**<br>*(EN: [English Version](docs/02_Lossless_96kHz_Codec_Specification.md))* | Rumus matematis **Adaptive Order 0/1/2/4 Linear Predictor**, **Wasted-Bits Removal**, **ZigZag & Escaped Golomb-Rice**, dan rincian **Header Paket 14-Byte (`HT306_LosslessHeader_t`)**. |
 | 📄 **[03_PIO_4Lane_I2S_and_DualCore_DMA.id.md](docs/03_PIO_4Lane_I2S_and_DualCore_DMA.id.md)**<br>*(EN: [English Version](docs/03_PIO_4Lane_I2S_and_DualCore_DMA.md))* | Diagram sekuens timing **`i2s_multi.pio`** pada *falling edge* `BCK`, algoritma *4-Lane Nibble Bit-Interleaver*, dan arsitektur **Wait-Free SPSC Chained Ping-Pong DMA** di SRAM. |
 | 📄 **[04_Build_Flash_and_JRiver_Setup.id.md](docs/04_Build_Flash_and_JRiver_Setup.id.md)**<br>*(EN: [English Version](docs/04_Build_Flash_and_JRiver_Setup.md))* | Panduan lengkap kompilasi `.uf2`, cara *flash* ke `Waveshare RP2350-Zero`, hasil benchmark pengujian, dan pengaturan **JRiver Media Center (`DSP Studio`)**. |
 | 📄 **[05_PC_Audio_Bridge_PRD_and_Architecture.id.md](docs/05_PC_Audio_Bridge_PRD_and_Architecture.id.md)**<br>*(EN: [English Version](docs/05_PC_Audio_Bridge_PRD_and_Architecture.md))* | Dokumen Kebutuhan Produk (PRD) dan spesifikasi teknis arsitektur **Aplikasi Perantara Audio PC (HT306 Audio Bridge)** pada Windows 10/11. |
